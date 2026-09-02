@@ -10,6 +10,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 find_package(GTest CONFIG REQUIRED)
 
+enable_testing()
+
 
 add_library(task_handler SHARED
     src/task_handler.cc
@@ -44,3 +46,6 @@ target_include_directories(task_handler_test1 PRIVATE
 target_link_libraries(task_handler_test1
     GTest::gtest_main
     )
+
+add_test(NAME task_handler_test COMMAND task_handler_test)
+add_test(NAME task_handler_test1 COMMAND task_handler_test1)
