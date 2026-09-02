@@ -40,11 +40,17 @@
 
 #include <algorithm>
 #include <any>
+#include <atomic>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <exception>
 #include <functional>
 #include <future>
 #include <list>
+#include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <variant>
 
@@ -103,7 +109,18 @@ public:
   template <size_t num_thread = 0> static TaskHandler *get_instance() noexcept {
     static_assert(num_thread < MAX_THREADS,
                   "num_thread must less than MAX_THREADS");
-    return thises_static[num_thread];
+    TaskHandler *instance = thises_static[num_thread];
+    if (!instance) {
+      // Returning null here would only defer the failure to a null dereference
+      // inside add_callable, far away from the actual mistake.
+      std::fprintf(stderr, "conan::TaskHandler: no handler for index %zu. In "
+                           "compiled-lib mode TaskHandler::init() must be "
+                           "called before get_instance(), and get_instance() "
+                           "must not be used after uninit().\n",
+                   num_thread);
+      std::abort();
+    }
+    return instance;
   }
 
   template <typename T = Queued, typename C,
@@ -131,6 +148,23 @@ public:
 private:
   void start();
   void stop();
+
+  // Hands `node` to the worker thread. Insertion happens under q_mutex_ while
+  // is_stop_ is still clear, which is what lets stop() guarantee that every
+  // accepted node eventually runs.
+  void enqueue(std::unique_ptr<Node> node) {
+    // add2list needs an lvalue: deducing N as a plain pointer would make its
+    // comparator take a const rvalue reference, which cannot bind to *it.
+    Node *raw = node.get();
+    {
+      std::lock_guard<std::mutex> mutex_guard(q_mutex_);
+      if (is_stop_)
+        throw std::runtime_error("conan::TaskHandler is stopped");
+      add2list(list_node_, raw);
+      node.release();
+    }
+    cv_.notify_one();
+  }
 
   template <typename Container, typename N>
   void add2list(Container &&container, N &&node) {
@@ -175,14 +209,18 @@ private:
   struct PreLoader {
     PreLoader() {
       for (size_t i = 0; i < MAX_THREADS; i++) {
-        thises_static[i] = new TaskHandler;
-        thises_static[i]->start();
+        // Publish only once the worker is running, so that a concurrent
+        // get_instance() cannot hand out a handler with no thread behind it.
+        auto *handler = new TaskHandler;
+        handler->start();
+        thises_static[i] = handler;
       }
     }
     ~PreLoader() {
       for (size_t i = 0; i < MAX_THREADS; i++) {
         thises_static[i]->stop();
         delete thises_static[i];
+        thises_static[i] = nullptr;
       }
     }
   };
@@ -194,67 +232,60 @@ private:
   std::mutex q_mutex_{};
 
   std::thread thread_{};
-  int is_stop_{0};
+  std::atomic_bool is_stop_{false};
 
   std::condition_variable cv_{};
-  bool ready_{false};
 };
 
 inline void TaskHandler::start() {
-  thread_ = std::thread([&] {
-    while (!is_stop_) {
-      std::unique_lock mutex_gurad(q_mutex_);
-      if (list_node_.empty()) {
-        ready_ = false;
-        cv_.wait(mutex_gurad, [&] { return ready_; });
-        if (is_stop_)
+  thread_ = std::thread([this] {
+    for (;;) {
+      std::unique_ptr<Node> node;
+      {
+        std::unique_lock<std::mutex> mutex_guard(q_mutex_);
+        cv_.wait(mutex_guard,
+                 [this] { return !list_node_.empty() || is_stop_; });
+        // An empty queue here implies is_stop_. Checking the queue first drains
+        // work that was accepted before the stop request instead of discarding
+        // it, which is what keeps add_callable<Blocked> callers from waiting on
+        // a promise that nobody will ever fulfil.
+        if (list_node_.empty())
           break;
+        node.reset(list_node_.front());
+        list_node_.pop_front();
       }
-      auto node = list_node_.front();
-      list_node_.pop_front();
-      mutex_gurad.unlock();
-      std::visit(
-          [](auto &&c) {
-            using T = std::decay_t<decltype(c)>;
-            if constexpr (std::is_same_v<T, Callable<std::function, void>> ||
-                          std::is_same_v<T,
-                                         Callable<std::packaged_task, void>> ||
-                          std::is_same_v<
-                              T, Callable<std::packaged_task, std::any>>)
-              c();
-          },
-          node->callable_);
-      delete node;
-    };
+      try {
+        std::visit([](auto &&c) { c(); }, node->callable_);
+      } catch (...) {
+        // A Queued task has no channel to report a failure on, so the
+        // exception is dropped rather than taking the process down with it.
+        // Blocked and Future tasks capture their own exceptions and hand them
+        // back to the caller.
+      }
+    }
   });
 }
 
 inline void TaskHandler::stop() {
-  is_stop_ = 1;
+  {
+    // Setting the flag under the mutex is what makes the notify below
+    // race-free: the worker either is already waiting and gets woken, or has
+    // yet to reach the wait and will observe is_stop_ in its predicate.
+    std::lock_guard<std::mutex> mutex_guard(q_mutex_);
+    is_stop_ = true;
+  }
+  cv_.notify_all();
 
-  std::unique_lock mutex_gurad(q_mutex_);
-  ready_ = true;
-  mutex_gurad.unlock();
-  cv_.notify_one();
-
-  thread_.join();
+  if (thread_.joinable())
+    thread_.join();
 }
 
 template <typename T, typename C, std::enable_if_t<is_queued_v<T>, void> *,
           std::enable_if_t<std::is_invocable_r_v<void, C>, void> *>
 void TaskHandler::add_callable(C &&callable, const int priority) {
-  auto node =
+  enqueue(std::unique_ptr<Node>{
       new Node{priority, std::in_place_type_t<Callable<std::function, void>>{},
-               std::forward<C>(callable)};
-
-  std::unique_lock mutex_gurad(q_mutex_);
-  add2list(list_node_, node);
-
-  if (!ready_) {
-    ready_ = true;
-    mutex_gurad.unlock();
-    cv_.notify_one();
-  }
+               std::forward<C>(callable)}});
 }
 
 template <typename T, typename C, std::enable_if_t<is_blocked_v<T>, void> *,
@@ -268,33 +299,35 @@ void TaskHandler::add_callable(C &&callable, const int priority) {
   std::promise<void> promise_tmp;
   auto future_tmp = promise_tmp.get_future();
 
-  auto node = new Node{
+  // Capturing by reference is safe here, and only here, because this function
+  // does not return until the task has run to completion.
+  enqueue(std::unique_ptr<Node>{new Node{
       priority, std::in_place_type_t<Callable<std::function, void>>{}, [&] {
-        callable();
-        promise_tmp.set_value();
-      }};
+        try {
+          callable();
+          promise_tmp.set_value();
+        } catch (...) {
+          promise_tmp.set_exception(std::current_exception());
+        }
+      }}});
 
-  std::unique_lock mutex_gurad(q_mutex_);
-  add2list(list_node_, node);
-
-  if (!ready_) {
-    ready_ = true;
-    mutex_gurad.unlock();
-    cv_.notify_one();
-  } else
-    mutex_gurad.unlock();
-  future_tmp.wait();
+  // get() rather than wait(), so a task that threw reports the failure to the
+  // caller instead of silently succeeding.
+  future_tmp.get();
 }
 
 template <typename T, typename C, std::enable_if_t<is_future_v<T>, void> *,
           std::enable_if_t<std::is_invocable_r_v<void, C>, void> *, typename R>
 std::future<R> TaskHandler::add_callable(C &&callable, const int priority) {
+  // The task outlives this call, so it has to own the callable. Capturing it by
+  // reference leaves the worker thread reading a caller temporary that has
+  // already gone out of scope.
   std::packaged_task<R()> packaged_task_tmp{};
   if constexpr (std::is_same_v<R, void>)
-    packaged_task_tmp = std::packaged_task<R()>{callable};
+    packaged_task_tmp = std::packaged_task<R()>{std::forward<C>(callable)};
   else
-    packaged_task_tmp =
-        std::packaged_task<R()>{[&] { return std::any{callable()}; }};
+    packaged_task_tmp = std::packaged_task<R()>{
+        [c = std::forward<C>(callable)]() mutable { return std::any{c()}; }};
 
   auto future_tmp = packaged_task_tmp.get_future();
 
@@ -303,18 +336,9 @@ std::future<R> TaskHandler::add_callable(C &&callable, const int priority) {
     return future_tmp;
   }
 
-  auto node = new Node{priority,
-                       std::in_place_type_t<Callable<std::packaged_task, R>>{},
-                       std::move(packaged_task_tmp)};
-
-  std::unique_lock mutex_gurad(q_mutex_);
-  add2list(list_node_, node);
-
-  if (!ready_) {
-    ready_ = true;
-    mutex_gurad.unlock();
-    cv_.notify_one();
-  }
+  enqueue(std::unique_ptr<Node>{
+      new Node{priority, std::in_place_type_t<Callable<std::packaged_task, R>>{},
+               std::move(packaged_task_tmp)}});
   return future_tmp;
 }
 CURRENT_NAMESPACE_END
