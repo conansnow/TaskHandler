@@ -1,65 +1,306 @@
-# Overview
+# TaskHandler
 
-TaskHandler is a simple and easy-to-use event handler written in c++, supporting both header-only and lib use cases.
+A small single-worker task queue for C++17.
 
-# Usage
+Every handler owns exactly one thread, and everything submitted to that handler
+runs on it, one task at a time. That is what makes it useful as an event
+handler: state owned by a handler needs no locking, because only its worker
+ever touches it. Submit work and forget about it, submit work and wait for it,
+or submit work and take a future for the result.
 
-Tasks are submitted to one of `MAX_THREADS` handlers, each of which owns a single
-worker thread and runs its tasks in ascending priority order (lower value first,
-submission order preserved within a priority).
+Usable header-only or as a compiled library, from the same source.
 
 ```cpp
-using namespace conan;
+#include "conan/task_handler.h"
+
+conan::TaskHandler handler;
 
 // Fire and forget.
-TaskHandler::get_instance()->add_callable([] { /* ... */ });
+handler.add_callable([] { std::cout << "on the worker thread\n"; });
 
-// Return only once the task has run.
-TaskHandler::get_instance()->add_callable<Blocked>([] { /* ... */ });
+// Wait for it.
+handler.add_callable<conan::Blocked>([] { std::cout << "done before we move on\n"; });
 
-// Return a future. Non-void results are boxed in std::any.
-auto result = TaskHandler::get_instance()->add_callable<Future>([] { return 42; });
-int value = std::any_cast<int>(result.get());
-
-// Pick a handler, and give a task a priority.
-TaskHandler::get_instance<1>()->add_callable([] { /* ... */ }, -1);
+// Take the result.
+std::future<int> answer = handler.add_callable<conan::Future>([] { return 42; });
+std::cout << answer.get() << '\n';
 ```
 
-## Header-only vs. compiled lib
+## Contents
 
-Without `TASKHANDLER_COMPILED_LIB` the header is self-contained and the handlers
-are started and stopped automatically.
+- [Installing](#installing)
+- [Submitting work](#submitting-work)
+- [Priority](#priority)
+- [Delayed work and cancellation](#delayed-work-and-cancellation)
+- [Errors](#errors)
+- [Shared handlers](#shared-handlers)
+- [Lifetime](#lifetime)
+- [Options](#options)
+- [Building](#building)
+- [Guarantees and limits](#guarantees-and-limits)
+- [License](#license)
 
-With `TASKHANDLER_COMPILED_LIB`, `TaskHandler::init()` must be called before the
-first `get_instance()` and `TaskHandler::uninit()` on shutdown. Both are
-idempotent and safe to call from multiple threads. Calling `get_instance()`
-before `init()` or after `uninit()` reports the mistake and aborts rather than
-returning a null or dangling handler.
+## Installing
 
-Because the two modes give `TaskHandler` different storage and lifetime, every
-translation unit that includes this header must agree on `TASKHANDLER_COMPILED_LIB`
-and `TASKHANDLER_SHARED_LIB`.
+### Header-only
 
-## Errors and shutdown
+Copy `include/conan/` into your project and include the header. Nothing else
+is needed, though you still have to link a thread library:
 
-- An exception thrown by a `Blocked` or `Future` task is delivered to the
-  caller, from `add_callable` and `future::get()` respectively. A `Queued` task
-  has no such channel, so its exception is discarded and the worker survives.
-- Shutdown drains whatever has already been accepted, so a task that was queued
-  before shutdown still runs and a `Blocked` caller is never left waiting.
-- Once shutdown has begun, `add_callable` throws `std::runtime_error` instead of
-  accepting work that could never run.
+```cmake
+find_package(Threads REQUIRED)
+target_include_directories(my_app PRIVATE third_party/TaskHandler/include)
+target_link_libraries(my_app PRIVATE Threads::Threads)
+```
 
-# Build
+### As a subdirectory
 
-Requires a C++17 compiler and GTest for the tests.
+```cmake
+add_subdirectory(third_party/TaskHandler)
+target_link_libraries(my_app PRIVATE TaskHandler::header_only)   # or ::task_handler
+```
 
-```bash
-cmake -S . -B build
+### As an installed package
+
+```sh
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build build
-ctest --test-dir build --output-on-failure
+cmake --install build
 ```
 
-# License
+```cmake
+find_package(TaskHandler 0.2 REQUIRED)
+target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
+```
+
+Two targets are exported:
+
+| Target | What it does |
+| --- | --- |
+| `TaskHandler::header_only` | Interface target. Nothing to build or ship. |
+| `TaskHandler::task_handler` | Compiled library. Shorter consumer build times, one shared object to ship. |
+
+`TaskHandler::task_handler` propagates `TASKHANDLER_COMPILED_LIB` (and
+`TASKHANDLER_SHARED_LIB` for shared builds) on its own, so there is nothing to
+define by hand. Pick one target per binary and do not mix them.
+
+## Submitting work
+
+`add_callable` takes a policy tag as its first template argument. The default
+is `Queued`.
+
+```cpp
+// Queued: returns immediately, gives back a TaskId you can cancel with.
+conan::TaskId id = handler.add_callable([] { work(); });
+
+// Blocked: returns once the task has run, rethrowing whatever it threw.
+handler.add_callable<conan::Blocked>([&] { state = compute(); });
+
+// Future: returns std::future<R> for the task's own R, move-only results
+// included.
+std::future<std::unique_ptr<Reply>> reply =
+    handler.add_callable<conan::Future>([] { return fetch(); });
+```
+
+Callables do not need to be copy-constructible, so captured `unique_ptr` state
+is fine:
+
+```cpp
+handler.add_callable([data = std::move(data)] { consume(*data); });
+```
+
+`Blocked` and `Future` detect being called from the handler's own worker thread
+and run the task inline instead of deadlocking, which makes recursive use safe:
+
+```cpp
+handler.add_callable<conan::Blocked>([&] {
+  // Already on the worker, so this runs inline rather than queueing behind
+  // a task that can never start.
+  handler.add_callable<conan::Blocked>([&] { nested(); });
+});
+```
+
+## Priority
+
+Every submission takes an optional priority. **Higher values run first.** Tasks
+of equal priority run in submission order.
+
+```cpp
+handler.add_callable([] { normal(); });            // priority 0
+handler.add_callable([] { urgent(); }, 10);        // jumps the queue
+handler.add_callable([] { whenever(); }, -10);     // sinks to the bottom
+```
+
+Priority only decides what the worker picks up next. It never interrupts a task
+that is already running.
+
+> Before 0.2.0 the comparison ran the other way and *lower* values went first.
+> If you passed a non-zero priority to an older version, flip its sign.
+
+## Delayed work and cancellation
+
+```cpp
+using namespace std::chrono_literals;
+
+conan::TaskId id = handler.add_callable_after(5s, [] { retry(); });
+handler.add_callable_at(deadline, [] { give_up(); });
+
+if (too_late)
+  handler.cancel(id);   // true if the task had not started yet
+```
+
+A delayed task becomes runnable at its deadline and is then ordered by priority
+like anything else, so a busy handler may run it later than asked. It is never
+run earlier.
+
+`cancel` returns `false` for a task that already ran, is running, or was
+already cancelled.
+
+## Errors
+
+An exception from a `Blocked` task is rethrown out of `add_callable`. An
+exception from a `Future` task is stored in the future and rethrown by `get()`.
+
+A `Queued` task has nowhere to report a failure, so by default the exception is
+discarded. Install a hook to see them:
+
+```cpp
+conan::TaskHandlerOptions options;
+options.on_exception = [](std::exception_ptr error) {
+  try {
+    std::rethrow_exception(error);
+  } catch (const std::exception &caught) {
+    LOG_ERROR("task failed: {}", caught.what());
+  }
+};
+conan::TaskHandler handler{std::move(options)};
+```
+
+The hook runs on the worker thread and only ever fires for `Queued` tasks.
+
+Submitting to a stopped handler throws `conan::TaskHandlerStopped`.
+
+## Shared handlers
+
+Three process-wide handlers are available without constructing anything. They
+are created on first use.
+
+```cpp
+conan::TaskHandler::instance().add_callable([] { work(); });      // index 0
+conan::TaskHandler::instance<1>().add_callable([] { other(); });  // index 1
+```
+
+`instance(index)` takes a runtime index and throws `std::out_of_range` past
+`instance_count()`. `init()` starts all three up front; `uninit()` drains and
+stops them. Both are optional and idempotent, and shutdown also happens
+automatically at program exit.
+
+The returned reference stays valid for the rest of the program, including
+across `uninit()`, so it can never be left dangling. After `uninit()` the
+handler is simply stopped, and submitting to it throws until `init()`.
+
+Need a different number of workers, or one you own? Construct your own:
+
+```cpp
+conan::TaskHandler render_thread;
+conan::TaskHandler io_thread;
+```
+
+## Lifetime
+
+Constructing a handler starts its worker. Destroying it runs everything already
+queued, then joins.
+
+```cpp
+void TaskHandler::start();   // idempotent
+void TaskHandler::stop();    // drain, stop, join; idempotent
+bool TaskHandler::running() const;
+```
+
+`stop()` runs the work that was already accepted rather than dropping it, so a
+`Blocked` caller is never left waiting on a task that will not run. Delayed
+tasks that are not yet due are discarded.
+
+Calling `stop()` from inside one of the handler's own tasks only records the
+request and returns, because a thread cannot join itself. The worker finishes
+draining and exits on its own.
+
+```cpp
+std::size_t TaskHandler::pending() const;   // accepted, not yet started
+void TaskHandler::flush();                  // block until the queue is empty
+bool TaskHandler::is_current_thread() const;
+```
+
+`flush()` waits for runnable work only, not for delayed tasks that are still
+waiting on a deadline. Called from the worker thread it returns immediately,
+since waiting there could only deadlock.
+
+## Options
+
+```cpp
+struct TaskHandlerOptions {
+  std::string thread_name;                             // shown in debuggers
+  std::function<void(std::exception_ptr)> on_exception;
+};
+```
+
+`thread_name` is applied on Linux and macOS and ignored elsewhere. Linux
+truncates it to 15 characters. The shared handlers name themselves
+`conan-task-0` through `conan-task-2`.
+
+## Building
+
+Dependencies are managed with [vcpkg](https://github.com/microsoft/vcpkg);
+point `VCPKG_ROOT` at your checkout. GoogleTest is only pulled in for the
+`tests` feature, so consumers of the library do not need it.
+
+```sh
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+```
+
+| Preset | Build |
+| --- | --- |
+| `debug` | Debug, shared |
+| `release` | Release, shared |
+| `static` | Release, static |
+| `asan` | AddressSanitizer and UndefinedBehaviorSanitizer |
+| `tsan` | ThreadSanitizer |
+
+The suite is compiled twice, once against each consumption mode, so the
+header-only and compiled builds cannot quietly diverge.
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `TASKHANDLER_BUILD_TESTS` | on when top level | Build the test suite |
+| `TASKHANDLER_BUILD_EXAMPLES` | on when top level | Build `examples/` |
+| `TASKHANDLER_INSTALL` | on when top level | Generate install rules |
+| `TASKHANDLER_WARNINGS_AS_ERRORS` | `OFF` | `-Werror` / `/WX` |
+| `BUILD_SHARED_LIBS` | `OFF` | Shared instead of static |
+
+`examples/basic.cc` is a runnable tour of everything above.
+
+## Guarantees and limits
+
+What you can rely on:
+
+- One worker per handler, so tasks on the same handler never run concurrently.
+- Higher priority first; equal priority in submission order.
+- `stop()` and destruction run the work already accepted.
+- A delayed task never runs before its deadline.
+- A reference from `instance()` stays valid for the life of the program.
+
+What to watch out for:
+
+- The queue is unbounded. A producer that outruns its handler will grow it
+  without limit.
+- `Blocked` across two handlers that each block on the other deadlocks, exactly
+  as two mutexes taken in opposite orders would.
+- Priority does not preempt. One long task delays everything behind it.
+- Mixing `TaskHandler::header_only` and `TaskHandler::task_handler` in one
+  binary gives you two sets of shared handlers. Pick one.
+
+## License
 
 The code in this repository is licensed under the MIT License.

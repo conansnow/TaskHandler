@@ -1,5 +1,16 @@
 {
-  "dependencies": [
-    "gtest"
-  ]
+  "name": "taskhandler",
+  "version": "0.2.0",
+  "description": "A small single-worker task queue and event handler for C++17",
+  "homepage": "https://github.com/conansnow/TaskHandler",
+  "license": "MIT",
+  "dependencies": [],
+  "features": {
+    "tests": {
+      "description": "Build the test suite",
+      "dependencies": [
+        "gtest"
+      ]
+    }
+  }
 }

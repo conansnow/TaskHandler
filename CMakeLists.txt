@@ -1,51 +1,141 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(TaskHandler VERSION 0.1.0 LANGUAGES C CXX)
+project(TaskHandler
+    VERSION 0.2.0
+    DESCRIPTION "A small single-worker task queue and event handler for C++17"
+    HOMEPAGE_URL "https://github.com/conansnow/TaskHandler"
+    LANGUAGES CXX
+    )
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED True)
+option(TASKHANDLER_BUILD_TESTS "Build the TaskHandler test suite" ${PROJECT_IS_TOP_LEVEL})
+option(TASKHANDLER_BUILD_EXAMPLES "Build the TaskHandler examples" ${PROJECT_IS_TOP_LEVEL})
+option(TASKHANDLER_INSTALL "Generate the TaskHandler install rules" ${PROJECT_IS_TOP_LEVEL})
+option(TASKHANDLER_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(GNUInstallDirs)
 
-find_package(GTest CONFIG REQUIRED)
+# std::thread needs an explicit -pthread on most Unix toolchains. It only
+# happens to link without it on glibc 2.34 and newer, where libpthread was
+# folded into libc.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
-enable_testing()
+if(MSVC)
+    # C4251 and C4275 fire on every standard-library member and base of a
+    # dllexported class. Hiding the members behind a pimpl to silence them
+    # would cost an allocation and an indirection per handler for no benefit,
+    # since the library and its consumers are built with the same toolchain.
+    set(TASKHANDLER_WARNING_FLAGS /W4 /permissive- /wd4251 /wd4275)
+    set(TASKHANDLER_WERROR_FLAG /WX)
+else()
+    set(TASKHANDLER_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor)
+    set(TASKHANDLER_WERROR_FLAG -Werror)
+endif()
 
+# Applies the project's own warning settings without pushing them onto anyone
+# who merely consumes the library.
+function(taskhandler_set_warnings target)
+    target_compile_options(${target} PRIVATE ${TASKHANDLER_WARNING_FLAGS})
+    if(TASKHANDLER_WARNINGS_AS_ERRORS)
+        target_compile_options(${target} PRIVATE ${TASKHANDLER_WERROR_FLAG})
+    endif()
+endfunction()
 
-add_library(task_handler SHARED
-    src/task_handler.cc
+set(TASKHANDLER_HEADERS
+    include/conan/task_handler.h
+    include/conan/task_handler-inl.h
     )
+
+# ---------------------------------------------------------------------------
+# Header-only usage: TaskHandler::header_only
+# ---------------------------------------------------------------------------
+add_library(task_handler_header_only INTERFACE)
+add_library(TaskHandler::header_only ALIAS task_handler_header_only)
+# Without EXPORT_NAME the installed target would be
+# TaskHandler::task_handler_header_only, so the name would differ depending on
+# whether the project is consumed from the build tree or from an install.
+set_target_properties(task_handler_header_only PROPERTIES EXPORT_NAME header_only)
+target_compile_features(task_handler_header_only INTERFACE cxx_std_17)
+target_include_directories(task_handler_header_only INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+target_link_libraries(task_handler_header_only INTERFACE Threads::Threads)
+
+# ---------------------------------------------------------------------------
+# Compiled usage: TaskHandler::task_handler
+# ---------------------------------------------------------------------------
+add_library(task_handler src/task_handler.cc ${TASKHANDLER_HEADERS})
+add_library(TaskHandler::task_handler ALIAS task_handler)
+taskhandler_set_warnings(task_handler)
+
+target_compile_features(task_handler PUBLIC cxx_std_17)
 target_include_directories(task_handler PUBLIC
-    inc
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     )
-target_compile_definitions(task_handler PRIVATE
-    TASKHANDLER_COMPILED_LIB
-    TASKHANDLER_SHARED_LIB
-    TASKHANDLER_EXPORTS
+target_link_libraries(task_handler PUBLIC Threads::Threads)
+
+# These select the header's compiled-library mode, so they are part of the ABI
+# contract and have to reach consumers rather than staying private.
+target_compile_definitions(task_handler PUBLIC TASKHANDLER_COMPILED_LIB)
+if(BUILD_SHARED_LIBS)
+    target_compile_definitions(task_handler PUBLIC TASKHANDLER_SHARED_LIB)
+    target_compile_definitions(task_handler PRIVATE TASKHANDLER_EXPORTS)
+endif()
+
+set_target_properties(task_handler PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+    # Without these the visibility attributes in the header are a no-op and the
+    # shared object exports every internal template instantiation.
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    WINDOWS_EXPORT_ALL_SYMBOLS OFF
     )
 
-add_executable(task_handler_test
-    src/googletest_nomain.cc
-    )
-target_compile_definitions(task_handler_test PRIVATE
-    TASKHANDLER_COMPILED_LIB
-    TASKHANDLER_SHARED_LIB
-    )
-target_link_libraries(task_handler_test
-    task_handler
-    GTest::gtest_main
-    )
+if(TASKHANDLER_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
-add_executable(task_handler_test1
-    src/googletest_nomain.cc
-    )
-target_include_directories(task_handler_test1 PRIVATE
-    inc
-    )
-target_link_libraries(task_handler_test1
-    GTest::gtest_main
-    )
+if(TASKHANDLER_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
 
-add_test(NAME task_handler_test COMMAND task_handler_test)
-add_test(NAME task_handler_test1 COMMAND task_handler_test1)
+if(TASKHANDLER_INSTALL)
+    include(CMakePackageConfigHelpers)
+
+    install(TARGETS task_handler task_handler_header_only
+        EXPORT TaskHandlerTargets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        )
+    install(DIRECTORY include/conan
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+    install(EXPORT TaskHandlerTargets
+        NAMESPACE TaskHandler::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TaskHandler
+        )
+
+    configure_package_config_file(
+        cmake/TaskHandlerConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/TaskHandlerConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TaskHandler
+        )
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/TaskHandlerConfigVersion.cmake
+        COMPATIBILITY SameMajorVersion
+        )
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/TaskHandlerConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/TaskHandlerConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TaskHandler
+        )
+endif()

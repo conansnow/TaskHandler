@@ -1,0 +1,3 @@
+add_executable(task_handler_example basic.cc)
+taskhandler_set_warnings(task_handler_example)
+target_link_libraries(task_handler_example PRIVATE TaskHandler::task_handler)

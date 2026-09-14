@@ -3,36 +3,95 @@
     "configurePresets": [
         {
             "name": "common",
-            "displayName": "common",
-            "description": "Sets Ninja generator, build and install directory, and toolchain file",
+            "hidden": true,
+            "description": "Ninja generator, out-of-source build and install trees, vcpkg toolchain",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "VCPKG_MANIFEST_FEATURES": "tests",
+                "TASKHANDLER_WARNINGS_AS_ERRORS": "ON"
             }
         },
         {
             "name": "debug",
-            "description": "debug build",
             "displayName": "debug",
+            "description": "Debug build of the shared library",
+            "inherits": "common",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
-            },
-            "inherits": [
-                "common"
-            ]
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BUILD_SHARED_LIBS": "ON"
+            }
         },
         {
             "name": "release",
-            "description": "release build",
             "displayName": "release",
+            "description": "Release build of the shared library",
+            "inherits": "common",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
-            },
-            "inherits": [
-                "common"
-            ]
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_SHARED_LIBS": "ON"
+            }
+        },
+        {
+            "name": "static",
+            "displayName": "static",
+            "description": "Release build of the static library",
+            "inherits": "common",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BUILD_SHARED_LIBS": "OFF"
+            }
+        },
+        {
+            "name": "asan",
+            "displayName": "asan",
+            "description": "AddressSanitizer and UndefinedBehaviorSanitizer build",
+            "inherits": "common",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "BUILD_SHARED_LIBS": "OFF",
+                "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+            }
+        },
+        {
+            "name": "tsan",
+            "displayName": "tsan",
+            "description": "ThreadSanitizer build, the one that matters most for a threading library",
+            "inherits": "common",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "BUILD_SHARED_LIBS": "OFF",
+                "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+            }
         }
+    ],
+    "buildPresets": [
+        { "name": "debug", "configurePreset": "debug" },
+        { "name": "release", "configurePreset": "release" },
+        { "name": "static", "configurePreset": "static" },
+        { "name": "asan", "configurePreset": "asan" },
+        { "name": "tsan", "configurePreset": "tsan" }
+    ],
+    "testPresets": [
+        {
+            "name": "common",
+            "hidden": true,
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "noTestsAction": "error"
+            }
+        },
+        { "name": "debug", "configurePreset": "debug", "inherits": "common" },
+        { "name": "release", "configurePreset": "release", "inherits": "common" },
+        { "name": "static", "configurePreset": "static", "inherits": "common" },
+        { "name": "asan", "configurePreset": "asan", "inherits": "common" },
+        { "name": "tsan", "configurePreset": "tsan", "inherits": "common" }
     ]
 }
