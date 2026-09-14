@@ -101,6 +101,8 @@ public:
   virtual ~Task() = default;
   Task(const Task &) = delete;
   Task &operator=(const Task &) = delete;
+  Task(Task &&) = delete;
+  Task &operator=(Task &&) = delete;
 
   virtual void run() = 0;
 };
@@ -165,7 +167,7 @@ class TaskId {
 public:
   TaskId() = default;
 
-  bool valid() const noexcept { return sequence_ != 0; }
+  [[nodiscard]] bool valid() const noexcept { return sequence_ != 0; }
   explicit operator bool() const noexcept { return valid(); }
 
 private:
@@ -246,7 +248,7 @@ public:
 
   // Tasks accepted but not yet started, including those waiting on a deadline.
   // Excludes the task currently running.
-  std::size_t pending() const;
+  [[nodiscard]] std::size_t pending() const;
 
   // Blocks until every runnable task submitted so far has finished and the
   // worker is idle. Tasks still waiting on a deadline are not waited for.
@@ -254,8 +256,8 @@ public:
   // could only deadlock.
   void flush();
 
-  bool is_current_thread() const;
-  bool running() const;
+  [[nodiscard]] bool is_current_thread() const;
+  [[nodiscard]] bool running() const;
 
   // Starts the worker if it is not running. Idempotent.
   void start();
@@ -270,17 +272,18 @@ public:
 
   // Shared handlers, created on first use. The reference stays valid for the
   // rest of the program, so it is never left dangling by uninit().
-  static constexpr std::size_t instance_count() noexcept {
+  [[nodiscard]] static constexpr std::size_t instance_count() noexcept {
     return kInstanceCount;
   }
 
-  template <std::size_t Index = 0> static TaskHandler &instance() {
+  template <std::size_t Index = 0>
+  [[nodiscard]] static TaskHandler &instance() {
     static_assert(Index < kInstanceCount,
                   "instance index must be less than instance_count()");
     return instance(Index);
   }
 
-  static TaskHandler &instance(std::size_t index);
+  [[nodiscard]] static TaskHandler &instance(std::size_t index);
 
   // Starts every shared handler. Optional: instance() creates a started
   // handler on its own. Useful to pay the thread-creation cost up front, and
@@ -333,6 +336,9 @@ TaskId TaskHandler::add_callable(C &&callable, int priority) {
 template <typename T, typename C,
           std::enable_if_t<detail::is_blocked_v<T>, int>,
           std::enable_if_t<detail::is_task_v<C>, int>>
+// The callable is deliberately not forwarded: this overload blocks until the
+// task has run, so the task borrows the caller's object instead of owning it.
+// NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
 void TaskHandler::add_callable(C &&callable, int priority) {
   if (is_current_thread()) {
     callable();

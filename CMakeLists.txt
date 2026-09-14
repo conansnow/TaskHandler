@@ -25,7 +25,11 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 if(MSVC)
-    set(TASKHANDLER_WARNING_FLAGS /W4 /permissive-)
+    # C4251 and C4275 fire on every standard-library member and base of a
+    # dllexported class. Hiding the members behind a pimpl to silence them
+    # would cost an allocation and an indirection per handler for no benefit,
+    # since the library and its consumers are built with the same toolchain.
+    set(TASKHANDLER_WARNING_FLAGS /W4 /permissive- /wd4251 /wd4275)
     set(TASKHANDLER_WERROR_FLAG /WX)
 else()
     set(TASKHANDLER_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor)

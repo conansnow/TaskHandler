@@ -18,7 +18,7 @@ int main() {
   // failure inside one can be observed.
   options.on_exception = [](std::exception_ptr error) {
     try {
-      std::rethrow_exception(error);
+      std::rethrow_exception(std::move(error));
     } catch (const std::exception &caught) {
       std::cout << "  [on_exception] " << caught.what() << '\n';
     }

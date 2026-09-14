@@ -9,6 +9,7 @@
 #include "conan/task_handler.h"
 #endif
 
+#include <array>
 #include <string>
 #include <utility>
 
@@ -207,7 +208,7 @@ TaskHandler::report_exception(std::exception_ptr error) const noexcept {
     return;
   try {
     options_.on_exception(std::move(error));
-  } catch (...) {
+  } catch (...) { // NOLINT(bugprone-empty-catch)
     // A reporting hook that fails must not take the worker thread down with
     // it; that would be strictly worse than the exception it was reporting.
   }
@@ -235,6 +236,8 @@ public:
 
   InstanceRegistry(const InstanceRegistry &) = delete;
   InstanceRegistry &operator=(const InstanceRegistry &) = delete;
+  InstanceRegistry(InstanceRegistry &&) = delete;
+  InstanceRegistry &operator=(InstanceRegistry &&) = delete;
 
   TaskHandler &get(std::size_t index) {
     std::lock_guard<std::mutex> lock{mutex_};
@@ -269,7 +272,7 @@ private:
   }
 
   std::mutex mutex_{};
-  TaskHandler *handlers_[TaskHandler::instance_count()]{};
+  std::array<TaskHandler *, TaskHandler::instance_count()> handlers_{};
 };
 
 TASKHANDLER_INLINE InstanceRegistry &registry() {

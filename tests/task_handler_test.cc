@@ -225,9 +225,10 @@ TEST(task_handler, shared_instances_are_independent) {
 }
 
 TEST(task_handler, instance_index_is_checked) {
-  EXPECT_EQ(3u, TaskHandler::instance_count());
-  EXPECT_THROW(TaskHandler::instance(TaskHandler::instance_count()),
-               std::out_of_range);
+  EXPECT_EQ(3U, TaskHandler::instance_count());
+  EXPECT_THROW(
+      static_cast<void>(TaskHandler::instance(TaskHandler::instance_count())),
+      std::out_of_range);
 }
 
 TEST(task_handler, blocked_recursion_runs_inline) {
@@ -325,14 +326,14 @@ TEST(task_handler, pending_counts_accepted_but_unstarted_tasks) {
   TaskHandler handler;
   Gate gate{handler};
 
-  EXPECT_EQ(0u, handler.pending());
+  EXPECT_EQ(0U, handler.pending());
   for (int i = 0; i < 5; i++)
     handler.add_callable([] {});
-  EXPECT_EQ(5u, handler.pending());
+  EXPECT_EQ(5U, handler.pending());
 
   gate.release();
   handler.flush();
-  EXPECT_EQ(0u, handler.pending());
+  EXPECT_EQ(0U, handler.pending());
 }
 
 TEST(task_handler, flush_waits_for_queued_work) {
@@ -434,9 +435,9 @@ TEST(task_handler, scheduled_task_can_be_cancelled_before_its_deadline) {
 
   const TaskId id =
       handler.add_callable_after(std::chrono::hours(1), [ran] { *ran = true; });
-  EXPECT_EQ(1u, handler.pending());
+  EXPECT_EQ(1U, handler.pending());
   EXPECT_TRUE(handler.cancel(id));
-  EXPECT_EQ(0u, handler.pending());
+  EXPECT_EQ(0U, handler.pending());
   EXPECT_FALSE(handler.cancel(id));
 
   handler.flush();

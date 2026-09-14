@@ -1,0 +1,65 @@
+---
+# Checks are scoped to what is useful for a small threading library. The
+# disabled entries below are either deliberate design decisions in this
+# codebase or checks that fight the project's existing style.
+Checks: >
+  bugprone-*,
+  concurrency-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-type-vararg,
+  -misc-const-correctness,
+  -misc-definitions-in-headers,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  -modernize-use-trailing-return-type,
+  -readability-braces-around-statements,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-redundant-member-init
+
+# misc-definitions-in-headers fires on every definition in task_handler-inl.h,
+# which is the point of that file: it is inline in header-only builds and
+# compiled exactly once otherwise.
+#
+# misc-include-cleaner fires on src/task_handler.cc, whose only job is to
+# include the two headers it is told it does not use.
+#
+# misc-const-correctness wants every std::lock_guard declared const, and
+# readability-redundant-member-init wants the {} dropped from members whose
+# default constructor runs anyway. Both fight the style already in the tree.
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/conan/.*'
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  # Variable templates such as is_queued_v follow the standard library's
+  # convention rather than the k-prefix used for constants.
+  - key: readability-identifier-naming.ConstexprVariableIgnoredRegexp
+    value: '^[a-z_]+_v$'
