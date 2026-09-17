@@ -14,6 +14,19 @@
 //     TASKHANDLER_SHARED_LIB on top when using the shared build. The CMake
 //     target propagates both automatically.
 
+// The version is spelled out here as well as in CMake, because a header-only
+// consumer has no CMake project to ask. The build checks the two against each
+// other, so they cannot drift apart.
+#define TASKHANDLER_VERSION_MAJOR 0
+#define TASKHANDLER_VERSION_MINOR 2
+#define TASKHANDLER_VERSION_PATCH 0
+#define TASKHANDLER_VERSION_STRING "0.2.0"
+
+// Comparable form, for #if checks against a required version.
+#define TASKHANDLER_VERSION                                                    \
+  (TASKHANDLER_VERSION_MAJOR * 10000 + TASKHANDLER_VERSION_MINOR * 100 +       \
+   TASKHANDLER_VERSION_PATCH)
+
 #if defined(TASKHANDLER_COMPILED_LIB)
 #define TASKHANDLER_INLINE
 #if defined(TASKHANDLER_SHARED_LIB)
@@ -62,6 +75,12 @@
 #include <utility>
 
 namespace conan {
+
+// The version the linked library was built as. In a header-only build this is
+// necessarily TASKHANDLER_VERSION_STRING; in a compiled build it is whatever
+// the library itself was compiled from, which is how a header that has drifted
+// away from the binary next to it can be spotted at runtime.
+[[nodiscard]] TASKHANDLER_API const char *runtime_version() noexcept;
 
 // Submission-policy tags, selected as the first template argument of
 // add_callable(). See TaskHandler for what each one does.
@@ -154,11 +173,27 @@ struct TimerEntry {
 
 } // namespace detail
 
+// Base of every exception the library itself throws, so that a caller which
+// only wants to know that a submission was refused can catch one type.
+class TASKHANDLER_VISIBLE TaskHandlerError : public std::runtime_error {
+public:
+  using std::runtime_error::runtime_error;
+};
+
 // Thrown by add_callable() and friends when the handler has been stopped and
 // can no longer accept work.
-class TASKHANDLER_VISIBLE TaskHandlerStopped : public std::runtime_error {
+class TASKHANDLER_VISIBLE TaskHandlerStopped : public TaskHandlerError {
 public:
-  TaskHandlerStopped() : std::runtime_error{"conan::TaskHandler is stopped"} {}
+  TaskHandlerStopped() : TaskHandlerError{"conan::TaskHandler is stopped"} {}
+};
+
+// Thrown by add_callable() and friends when the handler already holds
+// TaskHandlerOptions::max_pending tasks. Only ever thrown by a handler that was
+// given a limit; the default queue is unbounded.
+class TASKHANDLER_VISIBLE TaskHandlerQueueFull : public TaskHandlerError {
+public:
+  TaskHandlerQueueFull()
+      : TaskHandlerError{"conan::TaskHandler queue is full"} {}
 };
 
 // Identifies a submitted task for as long as it has not started running.
@@ -192,6 +227,16 @@ struct TaskHandlerOptions {
   // caller and never reach this hook. An exception thrown by the hook itself
   // is ignored.
   std::function<void(std::exception_ptr)> on_exception{};
+
+  // Largest number of tasks the handler will hold at once, counting both
+  // runnable and not-yet-due ones. Zero, the default, means no limit.
+  //
+  // A limit is backpressure: once it is reached, submitting throws
+  // TaskHandlerQueueFull instead of letting a producer that outruns its worker
+  // grow the queue until the process runs out of memory. Recursive Blocked and
+  // Future submissions from the worker thread run inline without queueing, so
+  // they are unaffected by the limit and cannot be refused by it.
+  std::size_t max_pending{0};
 };
 
 class TASKHANDLER_API TaskHandler {
@@ -259,7 +304,13 @@ public:
   [[nodiscard]] bool is_current_thread() const;
   [[nodiscard]] bool running() const;
 
-  // Starts the worker if it is not running. Idempotent.
+  // Starts the worker if it is not running. Works after a stop(), including
+  // one that was requested from inside a task. Idempotent.
+  //
+  // Calling start() from inside one of the handler's own tasks does nothing:
+  // the worker is running by definition, and a stop request already made can
+  // only be taken back from another thread, because a stop() that is waiting
+  // to join this worker would otherwise never be let go.
   void start();
 
   // Runs everything already queued, then stops the worker and joins it.
@@ -299,6 +350,11 @@ private:
   TaskId submit(std::unique_ptr<detail::Task> task, int priority);
   TaskId submit_at(std::unique_ptr<detail::Task> task, int priority,
                    std::chrono::steady_clock::time_point deadline);
+  // Both submission paths share one set of accept-or-refuse rules. Call with
+  // mutex_ held; throws rather than returning a code so that the refusal
+  // reaches the caller of add_callable() unchanged.
+  void ensure_accepting() const;
+  [[nodiscard]] bool worker_alive() const;
   void request_stop();
   void run_worker();
   void promote_due_timers(std::chrono::steady_clock::time_point now);
@@ -407,7 +463,7 @@ TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
 } // namespace conan
 
 #ifdef TASKHANDLER_HEADER_ONLY
-#include "task_handler-inl.h"
+#include "conan/detail/task_handler-inl.h"
 #endif
 
 #endif // CONAN_TASK_HANDLER_H_

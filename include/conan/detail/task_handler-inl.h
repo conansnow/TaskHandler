@@ -1,15 +1,17 @@
-#ifndef CONAN_TASK_HANDLER_INL_H_
-#define CONAN_TASK_HANDLER_INL_H_
+#ifndef CONAN_DETAIL_TASK_HANDLER_INL_H_
+#define CONAN_DETAIL_TASK_HANDLER_INL_H_
 
-// Out-of-line definitions. In header-only builds this file is pulled in by
-// task_handler.h and everything below is `inline`; in compiled-library builds
-// it is compiled exactly once, into src/task_handler.cc.
+// Out-of-line definitions, and not part of the public interface: include
+// conan/task_handler.h instead. In header-only builds this file is pulled in by
+// that header and everything below is `inline`; in compiled-library builds it
+// is compiled exactly once, into src/task_handler.cc.
 
 #ifndef TASKHANDLER_HEADER_ONLY
 #include "conan/task_handler.h"
 #endif
 
 #include <array>
+#include <map>
 #include <string>
 #include <utility>
 
@@ -19,6 +21,10 @@
 
 namespace conan {
 
+TASKHANDLER_INLINE const char *runtime_version() noexcept {
+  return TASKHANDLER_VERSION_STRING;
+}
+
 TASKHANDLER_INLINE TaskHandler::TaskHandler(TaskHandlerOptions options)
     : options_{std::move(options)} {
   start();
@@ -27,9 +33,24 @@ TASKHANDLER_INLINE TaskHandler::TaskHandler(TaskHandlerOptions options)
 TASKHANDLER_INLINE TaskHandler::~TaskHandler() { stop(); }
 
 TASKHANDLER_INLINE void TaskHandler::start() {
-  std::lock_guard<std::mutex> lifecycle_guard{lifecycle_mutex_};
-  if (thread_.joinable())
+  // Taking the lifecycle mutex from inside a task would deadlock against a
+  // stop() that is holding it while waiting to join this very worker. Clearing
+  // the stop request instead is no better: the worker would stop exiting and
+  // that stop() would wait forever. The worker is running either way, so there
+  // is nothing this call can usefully do.
+  if (is_current_thread())
     return;
+
+  std::lock_guard<std::mutex> lifecycle_guard{lifecycle_mutex_};
+  if (thread_.joinable()) {
+    // A stop() requested from inside a task returns without joining, because a
+    // thread cannot join itself, so the thread object outlives the worker it
+    // owned. Reap it here instead of mistaking it for a live worker and leaving
+    // the handler stopped for good.
+    if (worker_alive())
+      return;
+    thread_.join();
+  }
 
   std::unique_lock<std::mutex> lock{mutex_};
   stop_requested_ = false;
@@ -108,8 +129,17 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
       work_cv_.wait(lock);
   }
 
+  // Delayed tasks that never came due are dropped rather than held for a later
+  // start(): stop() promises to discard them, and keeping them would leave
+  // pending() counting work that nothing is going to run. They are destroyed
+  // below with the lock released, because a task's destructor is user code and
+  // may well touch this handler.
+  std::map<detail::TimerKey, detail::TimerEntry> discarded;
+  discarded.swap(timed_);
+
   worker_id_ = std::thread::id{};
   idle_cv_.notify_all();
+  lock.unlock();
 }
 
 TASKHANDLER_INLINE void
@@ -124,13 +154,25 @@ TaskHandler::promote_due_timers(std::chrono::steady_clock::time_point now) {
   }
 }
 
+TASKHANDLER_INLINE void TaskHandler::ensure_accepting() const {
+  if (stop_requested_)
+    throw TaskHandlerStopped{};
+  if (options_.max_pending != 0 &&
+      ready_.size() + timed_.size() >= options_.max_pending)
+    throw TaskHandlerQueueFull{};
+}
+
+TASKHANDLER_INLINE bool TaskHandler::worker_alive() const {
+  std::lock_guard<std::mutex> lock{mutex_};
+  return worker_id_ != std::thread::id{};
+}
+
 TASKHANDLER_INLINE TaskId
 TaskHandler::submit(std::unique_ptr<detail::Task> task, int priority) {
   TaskId id;
   {
     std::lock_guard<std::mutex> lock{mutex_};
-    if (stop_requested_)
-      throw TaskHandlerStopped{};
+    ensure_accepting();
 
     id.kind_ = TaskId::Kind::ready;
     id.priority_ = priority;
@@ -147,8 +189,7 @@ TaskHandler::submit_at(std::unique_ptr<detail::Task> task, int priority,
   TaskId id;
   {
     std::lock_guard<std::mutex> lock{mutex_};
-    if (stop_requested_)
-      throw TaskHandlerStopped{};
+    ensure_accepting();
 
     id.kind_ = TaskId::Kind::timed;
     id.priority_ = priority;
@@ -294,4 +335,4 @@ TASKHANDLER_INLINE void TaskHandler::uninit() { detail::registry().stop_all(); }
 
 } // namespace conan
 
-#endif // CONAN_TASK_HANDLER_INL_H_
+#endif // CONAN_DETAIL_TASK_HANDLER_INL_H_
