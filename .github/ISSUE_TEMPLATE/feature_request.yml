@@ -1,0 +1,35 @@
+name: Feature request
+description: Something the library should do and does not
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        TaskHandler is a serial executor: one thread per handler, one task at a
+        time. A request that needs a thread pool, work stealing or preemption
+        belongs in a different type rather than this one -- see docs/design.md.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What you are trying to do, and where the current interface gets in the
+        way. Describe the situation rather than the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: sketch
+    attributes:
+      label: What it might look like
+      description: The call you wish you could write.
+      render: c++
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you are doing instead
+      description: >
+        Whatever the workaround currently is, including "nothing, so I use
+        something else".
