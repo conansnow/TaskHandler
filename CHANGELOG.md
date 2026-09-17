@@ -65,8 +65,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   C++20 or C++23. CI does both, since consumers are free to be newer than the
   library.
 - The example is compiled against both consumption modes, like the test suite,
-  and the CI consumer project covers `FetchContent` and `add_subdirectory` as
-  well as `find_package`.
+  and it covers `max_pending`. The CI consumer project covers `FetchContent` and
+  `add_subdirectory` as well as `find_package`.
+- The clang-tidy job runs with `--warnings-as-errors`. clang-tidy exits 0 on
+  findings, so the job previously only caught a translation unit that would not
+  compile. The twelve findings it then reported are fixed, or carry a NOLINT
+  with the reason where the code is deliberate.
 
 ## [0.2.0]
 

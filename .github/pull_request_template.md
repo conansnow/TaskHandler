@@ -13,6 +13,7 @@ was in and what it did wrong.
 - [ ] `ctest --preset asan`
 - [ ] `TSAN_OPTIONS=halt_on_error=1 ctest --preset tsan --repeat until-fail:20`
 - [ ] `clang-format-18 --dry-run --Werror $(git ls-files '*.h' '*.cc')`
+- [ ] `clang-tidy-18 -p out/build/debug --warnings-as-errors='*' ...`
 - [ ] Benchmarks, if this touches the queue: before/after numbers below
 
 ## Notes

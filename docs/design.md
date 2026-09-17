@@ -252,6 +252,8 @@ where it can and on repetition where it cannot:
   one green run proves less here than it does elsewhere.
 - Each fixed bug keeps a named regression test, since every one of them was a
   case that looked impossible until it happened.
+- clang-tidy runs with `--warnings-as-errors`, because it exits 0 on findings and
+  a check that reports without failing is a check nobody reads.
 
 ## Performance
 

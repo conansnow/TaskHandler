@@ -30,9 +30,13 @@ ctest --preset debug
 ctest --preset asan
 TSAN_OPTIONS=halt_on_error=1 ctest --preset tsan --repeat until-fail:20
 clang-format-18 --dry-run --Werror $(git ls-files '*.h' '*.cc')
-clang-tidy-18 -p out/build/debug src/task_handler.cc examples/basic.cc \
-    benchmarks/task_handler_benchmark.cc
+clang-tidy-18 -p out/build/debug --warnings-as-errors='*' \
+    src/task_handler.cc examples/basic.cc benchmarks/task_handler_benchmark.cc
 ```
+
+`--warnings-as-errors` is not decoration: clang-tidy exits 0 on findings, so
+without it the check passes whatever it reports. The test file is left out on
+purpose, since its findings are almost entirely GoogleTest macro expansion.
 
 The sanitizer runs are not optional for a change to the queue or to the
 lifecycle. A threading bug that only shows up one run in fifty is the normal
