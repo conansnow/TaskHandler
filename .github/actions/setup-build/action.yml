@@ -1,0 +1,36 @@
+name: Set up vcpkg
+description: >
+  Bootstrap vcpkg, restore its binary cache from actions/cache, and put MSVC
+  on PATH on Windows so the Ninja presets can find cl.exe.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgJsonGlob: vcpkg.json
+
+    # run-vcpkg still defaults to the removed x-gha backend when
+    # VCPKG_BINARY_SOURCES is unset. Even if the workflow already set
+    # it, rewrite it to the files provider at the directory run-vcpkg
+    # just created, so a later cmake --preset cannot pick x-gha back up.
+    - name: Point vcpkg at the files cache
+      shell: bash
+      run: |
+        echo "VCPKG_BINARY_SOURCES=clear;files,${VCPKG_DEFAULT_BINARY_CACHE},readwrite" >> "$GITHUB_ENV"
+
+    - name: Restore vcpkg binary cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+        key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+        restore-keys: |
+          vcpkg-${{ runner.os }}-${{ runner.arch }}-
+
+    # vcpkg finds MSVC through vswhere. CMake's Ninja generator does not:
+    # it needs cl.exe on PATH, which a stock windows-latest runner does
+    # not provide.
+    - name: Enable MSVC
+      if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1

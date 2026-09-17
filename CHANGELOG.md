@@ -43,6 +43,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- GitHub Actions never reached a compile: `lukka/run-vcpkg` still asked for
+  the removed `x-gha` binary cache, so every job that needed GoogleTest died
+  in configure. The workflow now uses a files cache instead.
 - `start()` could not revive a handler that had been stopped from inside one of
   its own tasks. Such a stop leaves the `std::thread` joinable forever, because
   a worker cannot join itself, and `start()` read that as a live worker and
