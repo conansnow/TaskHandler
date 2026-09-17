@@ -76,6 +76,40 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+      # A smoke run rather than a measurement: CI runners are far too noisy for
+      # the numbers to mean anything, but a benchmark that no longer runs is
+      # worse than no benchmark at all.
+      - name: Run benchmarks
+        if: matrix.name == 'linux-gcc-release'
+        run: ./out/build/release/benchmarks/task_handler_benchmark
+
+  # The library only promises C++17, but consumers are free to be newer than
+  # that, and a deprecation or a changed overload set breaks them rather than us.
+  standards:
+    name: c++${{ matrix.standard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        standard: [20, 23]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: vcpkg.json
+
+      - name: Configure
+        run: cmake --preset debug -DCMAKE_CXX_STANDARD=${{ matrix.standard }}
+
+      - name: Build
+        run: cmake --build --preset debug
+
+      - name: Test
+        run: ctest --preset debug
+
   # The checks that matter most for a threading library, and the reason the
   # asan and tsan presets exist.
   sanitizers:
@@ -131,10 +165,11 @@ jobs:
           TSAN_OPTIONS: halt_on_error=1
         run: ctest --preset tsan --repeat until-fail:20
 
-  # Proves that find_package(TaskHandler) works against a real install tree,
-  # for both exported targets. A build-tree-only check would not have caught
-  # the installed header-only target being exported under the wrong name.
-  install:
+  # Proves that the ways the README tells people to depend on TaskHandler
+  # actually work, for both exported targets. A build-tree-only check would not
+  # have caught the installed header-only target being exported under the wrong
+  # name.
+  consume:
     name: install and consume
     runs-on: ubuntu-latest
     steps:
@@ -153,11 +188,23 @@ jobs:
 
       - name: Consume via find_package
         run: |
-          cmake -S ci/consumer -B out/consumer -G Ninja \
+          cmake -S ci/consumer -B out/consumer-find-package -G Ninja \
             -DCMAKE_PREFIX_PATH="$PWD/out/install/release"
-          cmake --build out/consumer
-          ./out/consumer/consumer_compiled
-          ./out/consumer/consumer_header_only
+          cmake --build out/consumer-find-package
+          ./out/consumer-find-package/consumer_compiled
+          ./out/consumer-find-package/consumer_header_only
+
+      # FETCHCONTENT_SOURCE_DIR points the declared dependency at this
+      # checkout, so the job tests the tree it was run against instead of
+      # fetching the tag. This covers add_subdirectory() too.
+      - name: Consume as a subproject
+        run: |
+          cmake -S ci/consumer -B out/consumer-fetchcontent -G Ninja \
+            -DTASKHANDLER_CONSUMER_MODE=fetchcontent \
+            -DFETCHCONTENT_SOURCE_DIR_TASKHANDLER="$PWD"
+          cmake --build out/consumer-fetchcontent
+          ./out/consumer-fetchcontent/consumer_compiled
+          ./out/consumer-fetchcontent/consumer_header_only
 
   format:
     name: clang-format
@@ -170,11 +217,12 @@ jobs:
       - name: Install clang-format
         run: sudo apt-get update && sudo apt-get install -y clang-format-18
 
+      # Driven off git rather than a list of directories, so a source file in a
+      # directory nobody remembered to add here cannot escape the check.
       - name: Check formatting
         run: |
           clang-format-18 --version
-          clang-format-18 --dry-run --Werror \
-            include/conan/*.h src/*.cc tests/*.cc examples/*.cc
+          clang-format-18 --dry-run --Werror $(git ls-files '*.h' '*.cc')
 
   tidy:
     name: clang-tidy
@@ -204,4 +252,6 @@ jobs:
       - name: Run clang-tidy
         run: |
           clang-tidy-18 --version
-          clang-tidy-18 -p out/build/debug src/task_handler.cc examples/basic.cc
+          clang-tidy-18 -p out/build/debug \
+            src/task_handler.cc examples/basic.cc \
+            benchmarks/task_handler_benchmark.cc
