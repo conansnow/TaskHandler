@@ -359,7 +359,6 @@ private:
   // mutex_ held; throws rather than returning a code so that the refusal
   // reaches the caller of add_callable() unchanged.
   void ensure_accepting() const;
-  [[nodiscard]] bool worker_alive() const;
   void request_stop();
   void run_worker();
   void promote_due_timers(std::chrono::steady_clock::time_point now);

@@ -49,8 +49,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `start()` could not revive a handler that had been stopped from inside one of
   its own tasks. Such a stop leaves the `std::thread` joinable forever, because
   a worker cannot join itself, and `start()` read that as a live worker and
-  returned. The handler stayed stopped for good: `running()` was false and every
-  submission threw. It now reaps the exited worker first.
+  returned. `running()` is already false once the stop flag is set, so a
+  caller that waited on it could still hit the worker on the way out and get
+  the same no-op. It now joins the exiting worker first, then starts a new
+  one.
 - `start()` from inside a task deadlocked against a concurrent `stop()`, which
   holds the lifecycle mutex while waiting to join that very worker. It now
   returns instead, as `stop()` already did from the same position.
