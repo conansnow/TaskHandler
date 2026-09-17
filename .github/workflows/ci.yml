@@ -53,7 +53,7 @@ jobs:
             extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
@@ -94,7 +94,7 @@ jobs:
         standard: [20, 23]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
@@ -121,7 +121,7 @@ jobs:
         preset: [asan, tsan]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
@@ -147,7 +147,7 @@ jobs:
     name: repeat under tsan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
@@ -173,7 +173,7 @@ jobs:
     name: install and consume
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
@@ -210,7 +210,7 @@ jobs:
     name: clang-format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned: clang-format's output drifts between major versions, so an
       # unpinned runner upgrade would fail this job on untouched code.
@@ -228,7 +228,7 @@ jobs:
     name: clang-tidy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
