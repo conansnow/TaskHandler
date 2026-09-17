@@ -9,6 +9,7 @@ project(TaskHandler
 
 option(TASKHANDLER_BUILD_TESTS "Build the TaskHandler test suite" ${PROJECT_IS_TOP_LEVEL})
 option(TASKHANDLER_BUILD_EXAMPLES "Build the TaskHandler examples" ${PROJECT_IS_TOP_LEVEL})
+option(TASKHANDLER_BUILD_BENCHMARKS "Build the TaskHandler benchmarks" ${PROJECT_IS_TOP_LEVEL})
 option(TASKHANDLER_INSTALL "Generate the TaskHandler install rules" ${PROJECT_IS_TOP_LEVEL})
 option(TASKHANDLER_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
@@ -132,6 +133,10 @@ endif()
 
 if(TASKHANDLER_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(TASKHANDLER_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()
 
 if(TASKHANDLER_INSTALL)
