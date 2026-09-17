@@ -12,6 +12,11 @@ concurrency:
 
 env:
   VCPKG_DISABLE_METRICS: "1"
+  # run-vcpkg defaults to clear;x-gha,readwrite. GitHub no longer
+  # exposes ACTIONS_CACHE_URL, and vcpkg removed that backend, so
+  # every job that needed GoogleTest died in configure. "default"
+  # is the files provider; setup-build then caches that directory.
+  VCPKG_BINARY_SOURCES: "default"
 
 jobs:
   build:
@@ -53,12 +58,10 @@ jobs:
             extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgJsonGlob: vcpkg.json
+        uses: ./.github/actions/setup-build
 
       - name: Select compiler
         if: matrix.cc != ''
@@ -94,12 +97,10 @@ jobs:
         standard: [20, 23]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgJsonGlob: vcpkg.json
+        uses: ./.github/actions/setup-build
 
       - name: Configure
         run: cmake --preset debug -DCMAKE_CXX_STANDARD=${{ matrix.standard }}
@@ -121,12 +122,10 @@ jobs:
         preset: [asan, tsan]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgJsonGlob: vcpkg.json
+        uses: ./.github/actions/setup-build
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -147,12 +146,10 @@ jobs:
     name: repeat under tsan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgJsonGlob: vcpkg.json
+        uses: ./.github/actions/setup-build
 
       - name: Configure
         run: cmake --preset tsan
@@ -173,12 +170,10 @@ jobs:
     name: install and consume
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgJsonGlob: vcpkg.json
+        uses: ./.github/actions/setup-build
 
       - name: Build and install
         run: |
@@ -210,7 +205,7 @@ jobs:
     name: clang-format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned: clang-format's output drifts between major versions, so an
       # unpinned runner upgrade would fail this job on untouched code.
@@ -228,12 +223,10 @@ jobs:
     name: clang-tidy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgJsonGlob: vcpkg.json
+        uses: ./.github/actions/setup-build
 
       # clang picks the newest GCC installation it can find and then needs that
       # GCC's libstdc++ headers, which are not installed on the runner by

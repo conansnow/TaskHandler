@@ -147,9 +147,10 @@ The awkward cases, all of which have regression tests:
   `std::system_error` and takes the process with it. The call records the
   request and returns, and the worker exits once it has drained.
 - **`start()` after that.** The `std::thread` object stays joinable after the
-  worker has exited, because nobody joined it. `start()` reaps it rather than
-  mistaking it for a live worker, which used to leave such a handler stopped for
-  good.
+  worker has exited, because nobody joined it. `running()` is already false
+  once the stop flag is set, so a caller that waited on it could still meet
+  the worker on the way out. `start()` joins that thread rather than treating
+  a still-alive worker as "already running", then starts a new one.
 - **`start()` from inside a task.** It returns without doing anything. Taking
   `lifecycle_mutex_` would deadlock against a `stop()` holding it while waiting
   to join this very worker, and clearing the stop request instead would leave

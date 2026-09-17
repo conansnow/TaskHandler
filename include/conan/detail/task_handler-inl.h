@@ -43,12 +43,17 @@ TASKHANDLER_INLINE void TaskHandler::start() {
 
   std::lock_guard<std::mutex> lifecycle_guard{lifecycle_mutex_};
   if (thread_.joinable()) {
+    {
+      std::lock_guard<std::mutex> lock{mutex_};
+      // Already running, and not on the way out.
+      if (worker_id_ != std::thread::id{} && !stop_requested_)
+        return;
+    }
     // A stop() requested from inside a task returns without joining, because a
     // thread cannot join itself, so the thread object outlives the worker it
-    // owned. Reap it here instead of mistaking it for a live worker and leaving
-    // the handler stopped for good.
-    if (worker_alive())
-      return;
+    // owned. running() is already false once the stop flag is set, which used
+    // to make start() return here while the worker was still exiting and leave
+    // the handler stopped for good. Join waits that out, then we spawn below.
     thread_.join();
   }
 
@@ -160,11 +165,6 @@ TASKHANDLER_INLINE void TaskHandler::ensure_accepting() const {
   if (options_.max_pending != 0 &&
       ready_.size() + timed_.size() >= options_.max_pending)
     throw TaskHandlerQueueFull{};
-}
-
-TASKHANDLER_INLINE bool TaskHandler::worker_alive() const {
-  std::lock_guard<std::mutex> lock{mutex_};
-  return worker_id_ != std::thread::id{};
 }
 
 TASKHANDLER_INLINE TaskId

@@ -410,20 +410,35 @@ TEST(task_handler, scheduled_task_runs_no_earlier_than_its_delay) {
 TEST(task_handler, scheduled_tasks_run_in_deadline_order) {
   TaskHandler handler;
   auto recorder = std::make_shared<Recorder>();
-  const auto base = std::chrono::steady_clock::now();
-
-  // Submitted back to front, so passing requires the deadlines to be honoured
-  // rather than the submission order.
-  handler.add_callable_at(base + std::chrono::milliseconds(90),
-                          [recorder] { recorder->record(3); });
-  handler.add_callable_at(base + std::chrono::milliseconds(30),
-                          [recorder] { recorder->record(1); });
+  auto first = std::make_shared<std::promise<void>>();
+  auto first_future = first->get_future();
   auto done = std::make_shared<std::promise<void>>();
   auto done_future = done->get_future();
-  handler.add_callable_at(base + std::chrono::milliseconds(120),
-                          [done] { done->set_value(); });
-  handler.add_callable_at(base + std::chrono::milliseconds(60),
+
+  // Park the worker so every timer is queued before any of them can run.
+  // Without that, a slow first wakeup promotes several due timers in one
+  // go, they fall into ready_ in submission order, and this test flakes.
+  Gate gate{handler};
+  const auto base = std::chrono::steady_clock::now();
+  constexpr auto kSlot = std::chrono::milliseconds(200);
+
+  handler.add_callable_at(base + 3 * kSlot,
+                          [recorder] { recorder->record(3); });
+  handler.add_callable_at(base + 1 * kSlot, [recorder, first] {
+    recorder->record(1);
+    first->set_value();
+  });
+  handler.add_callable_at(base + 2 * kSlot,
                           [recorder] { recorder->record(2); });
+  handler.add_callable_at(base + 4 * kSlot, [done] { done->set_value(); });
+
+  // Only the 200ms task is due. Releasing now means the worker must honour
+  // that deadline rather than the fact that 3 was submitted first.
+  std::this_thread::sleep_until(base + kSlot + kSlot / 2);
+  gate.release();
+
+  ASSERT_EQ(std::future_status::ready, first_future.wait_for(kTimeout));
+  EXPECT_EQ(std::vector<int>({1}), recorder->snapshot());
 
   ASSERT_EQ(std::future_status::ready, done_future.wait_for(kTimeout));
   EXPECT_EQ(std::vector<int>({1, 2, 3}), recorder->snapshot());
@@ -626,6 +641,9 @@ TEST(task_handler, start_revives_a_handler_stopped_from_inside_a_task) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   ASSERT_FALSE(handler.running());
 
+  // start() joins the exiting worker if it has not finished yet, then
+  // spawns a new one. running() being false is not enough on its own:
+  // the stop flag is set before the thread actually leaves.
   handler.start();
   EXPECT_TRUE(handler.running());
 
