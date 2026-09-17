@@ -6,6 +6,72 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- `TaskHandlerStopped` now derives from the new `conan::TaskHandlerError` rather
+  than directly from `std::runtime_error`. Code catching either
+  `TaskHandlerStopped` or `std::runtime_error` is unaffected.
+- `TaskHandlerOptions` has a new member and so changes size, which breaks the
+  shared-library ABI. Rebuild consumers against the matching header; a
+  mismatched pair now shows up through `conan::runtime_version()` instead of
+  misbehaving.
+
+### Added
+
+- `TaskHandlerOptions::max_pending` bounds the queue. Once it is reached,
+  submitting throws the new `conan::TaskHandlerQueueFull` instead of letting a
+  producer that outruns its worker grow the queue without limit. Zero, the
+  default, keeps the queue unbounded. Recursive `Blocked` and `Future`
+  submissions run inline and are never refused by it.
+- `conan::TaskHandlerError`, the base of `TaskHandlerStopped` and
+  `TaskHandlerQueueFull`, so a caller that only wants to know that a submission
+  was refused can catch one type.
+- `TASKHANDLER_VERSION_MAJOR`, `_MINOR`, `_PATCH`, `_STRING` and a comparable
+  `TASKHANDLER_VERSION`, for consumers with no CMake project to ask, plus
+  `conan::runtime_version()` for the version the linked library was built from.
+  Configuring the project checks the macros against `project()`, so the two
+  cannot drift.
+- `benchmarks/`, timing submission throughput for one and for several producers,
+  the same across sixteen priorities, timer bookkeeping, and the `Blocked` and
+  `Future` round trips. No benchmark framework: the library has no dependencies
+  and this did not need to be its first. Built when TaskHandler is the top-level
+  project, or with `TASKHANDLER_BUILD_BENCHMARKS`.
+- `docs/design.md`, on why the internals look the way they do, including the
+  alternatives that were tried and rejected. `CONTRIBUTING.md`, `SECURITY.md`,
+  issue and pull request templates, an `.editorconfig` and a dependabot
+  configuration for the actions.
+
+### Fixed
+
+- `start()` could not revive a handler that had been stopped from inside one of
+  its own tasks. Such a stop leaves the `std::thread` joinable forever, because
+  a worker cannot join itself, and `start()` read that as a live worker and
+  returned. The handler stayed stopped for good: `running()` was false and every
+  submission threw. It now reaps the exited worker first.
+- `start()` from inside a task deadlocked against a concurrent `stop()`, which
+  holds the lifecycle mutex while waiting to join that very worker. It now
+  returns instead, as `stop()` already did from the same position.
+- `stop()` documented undue delayed tasks as discarded but kept them, so
+  `pending()` went on counting work nothing would run and a later `start()`
+  resurrected tasks whose deadline had passed while the handler was down. The
+  worker now drops them as it exits.
+
+### Changed
+
+- The out-of-line definitions move from `include/conan/task_handler-inl.h` to
+  `include/conan/detail/task_handler-inl.h`, matching the namespace they are
+  already in. Nothing should have been including them directly.
+- `CMAKE_CXX_STANDARD` is no longer forced to 17, so the project can be built as
+  C++20 or C++23. CI does both, since consumers are free to be newer than the
+  library.
+- The example is compiled against both consumption modes, like the test suite,
+  and it covers `max_pending`. The CI consumer project covers `FetchContent` and
+  `add_subdirectory` as well as `find_package`.
+- The clang-tidy job runs with `--warnings-as-errors`. clang-tidy exits 0 on
+  findings, so the job previously only caught a translation unit that would not
+  compile. The twelve findings it then reported are fixed, or carry a NOLINT
+  with the reason where the code is deliberate.
+
 ## [0.2.0]
 
 ### Breaking

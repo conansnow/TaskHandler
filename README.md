@@ -33,11 +33,14 @@ std::cout << answer.get() << '\n';
 - [Priority](#priority)
 - [Delayed work and cancellation](#delayed-work-and-cancellation)
 - [Errors](#errors)
+- [Backpressure](#backpressure)
 - [Shared handlers](#shared-handlers)
 - [Lifetime](#lifetime)
 - [Options](#options)
+- [Version](#version)
 - [Building](#building)
 - [Guarantees and limits](#guarantees-and-limits)
+- [Contributing](#contributing)
 - [License](#license)
 
 ## Installing
@@ -59,6 +62,22 @@ target_link_libraries(my_app PRIVATE Threads::Threads)
 add_subdirectory(third_party/TaskHandler)
 target_link_libraries(my_app PRIVATE TaskHandler::header_only)   # or ::task_handler
 ```
+
+### With FetchContent
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(TaskHandler
+    GIT_REPOSITORY https://github.com/conansnow/TaskHandler.git
+    GIT_TAG v0.2.0
+    )
+FetchContent_MakeAvailable(TaskHandler)
+target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
+```
+
+Tests, examples, benchmarks and install rules default to on only when
+TaskHandler is the top-level project, so a consumer builds the library and
+nothing else.
 
 ### As an installed package
 
@@ -178,7 +197,40 @@ conan::TaskHandler handler{std::move(options)};
 
 The hook runs on the worker thread and only ever fires for `Queued` tasks.
 
-Submitting to a stopped handler throws `conan::TaskHandlerStopped`.
+A submission that is refused throws. Both cases share a base, so a caller that
+only wants to know that the handler would not take the work can catch one type.
+
+| Exception | Thrown when |
+| --- | --- |
+| `conan::TaskHandlerError` | Base of both; also a `std::runtime_error` |
+| `conan::TaskHandlerStopped` | The handler has been stopped |
+| `conan::TaskHandlerQueueFull` | `max_pending` tasks are already waiting |
+
+## Backpressure
+
+The queue is unbounded by default. Bound it when the producer can outrun the
+handler, and submission is refused rather than growing the queue until the
+process runs out of memory:
+
+```cpp
+conan::TaskHandlerOptions options;
+options.max_pending = 1024;
+conan::TaskHandler handler{std::move(options)};
+
+try {
+  handler.add_callable([] { work(); });
+} catch (const conan::TaskHandlerQueueFull &) {
+  drop_or_retry_later();
+}
+```
+
+The limit counts runnable and not-yet-due tasks together, and excludes the task
+currently running. Recursive `Blocked` and `Future` submissions from the worker
+thread run inline without queueing, so the limit never refuses them.
+
+It throws rather than blocking on purpose: a blocking submit is a place where an
+unrelated thread can be parked indefinitely, and between two handlers that is a
+deadlock waiting to happen.
 
 ## Shared handlers
 
@@ -219,11 +271,14 @@ bool TaskHandler::running() const;
 
 `stop()` runs the work that was already accepted rather than dropping it, so a
 `Blocked` caller is never left waiting on a task that will not run. Delayed
-tasks that are not yet due are discarded.
+tasks that are not yet due are discarded, and `start()` brings the handler back
+afterwards.
 
 Calling `stop()` from inside one of the handler's own tasks only records the
 request and returns, because a thread cannot join itself. The worker finishes
-draining and exits on its own.
+draining and exits on its own. `start()` from inside a task does nothing at all:
+the worker is running by definition, and a stop request already made can only be
+taken back from another thread.
 
 ```cpp
 std::size_t TaskHandler::pending() const;   // accepted, not yet started
@@ -240,13 +295,32 @@ since waiting there could only deadlock.
 ```cpp
 struct TaskHandlerOptions {
   std::string thread_name;                             // shown in debuggers
-  std::function<void(std::exception_ptr)> on_exception;
+  std::function<void(std::exception_ptr)> on_exception; // Queued failures
+  std::size_t max_pending;                             // 0 means unbounded
 };
 ```
 
 `thread_name` is applied on Linux and macOS and ignored elsewhere. Linux
 truncates it to 15 characters. The shared handlers name themselves
 `conan-task-0` through `conan-task-2`.
+
+Options are read once, when the worker starts. Changing them afterwards means
+constructing another handler.
+
+## Version
+
+```cpp
+#if TASKHANDLER_VERSION < 200          // major * 10000 + minor * 100 + patch
+#error TaskHandler 0.2 or newer is required
+#endif
+
+std::cout << TASKHANDLER_VERSION_STRING << '\n';   // the header's version
+std::cout << conan::runtime_version() << '\n';     // the library's own
+```
+
+The two differ only if a header has drifted away from the compiled library next
+to it, which is what `runtime_version()` is for. While the major version is 0, a
+minor bump may break API or ABI; the [changelog](CHANGELOG.md) says what.
 
 ## Building
 
@@ -275,11 +349,17 @@ header-only and compiled builds cannot quietly diverge.
 | --- | --- | --- |
 | `TASKHANDLER_BUILD_TESTS` | on when top level | Build the test suite |
 | `TASKHANDLER_BUILD_EXAMPLES` | on when top level | Build `examples/` |
+| `TASKHANDLER_BUILD_BENCHMARKS` | on when top level | Build `benchmarks/` |
 | `TASKHANDLER_INSTALL` | on when top level | Generate install rules |
 | `TASKHANDLER_WARNINGS_AS_ERRORS` | `OFF` | `-Werror` / `/WX` |
 | `BUILD_SHARED_LIBS` | `OFF` | Shared instead of static |
 
 `examples/basic.cc` is a runnable tour of everything above.
+`benchmarks/task_handler_benchmark.cc` times submission, scheduling and the
+round trips; run it before and after a change to the queue.
+
+The library needs C++17, and CI also rebuilds everything as C++20 and C++23, so
+a newer consumer is covered too.
 
 ## Guarantees and limits
 
@@ -293,13 +373,24 @@ What you can rely on:
 
 What to watch out for:
 
-- The queue is unbounded. A producer that outruns its handler will grow it
-  without limit.
+- The queue is unbounded unless you set `max_pending`. A producer that outruns
+  its handler will otherwise grow it without limit.
 - `Blocked` across two handlers that each block on the other deadlocks, exactly
   as two mutexes taken in opposite orders would.
+- A handler must outlive its worker, so it cannot be destroyed from inside one
+  of its own tasks. `stop()` from there is fine, but destruction cannot wait for
+  a thread it is running on, and the worker would go on using a destroyed
+  object.
 - Priority does not preempt. One long task delays everything behind it.
 - Mixing `TaskHandler::header_only` and `TaskHandler::task_handler` in one
   binary gives you two sets of shared handlers. Pick one.
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the build, the checks CI runs and what
+a change is expected to come with. [docs/design.md](docs/design.md) explains why
+the internals look the way they do, including the parts that were tried and
+rejected.
 
 ## License
 

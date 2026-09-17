@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # The actions are the only dependency in this repository that moves on its
+  # own. The library itself has none, and vcpkg is pinned by the baseline in
+  # vcpkg-configuration.json, which is bumped by hand when there is a reason to.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]

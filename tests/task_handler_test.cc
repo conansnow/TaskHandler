@@ -453,6 +453,87 @@ TEST(task_handler, undue_scheduled_tasks_are_discarded_on_stop) {
   EXPECT_FALSE(ran->load());
 }
 
+// Regression test: undue timers were left in the queue by stop(), so pending()
+// kept counting work nothing would run and a later start() resurrected tasks
+// whose deadline had passed while the handler was down.
+TEST(task_handler, stop_discards_undue_scheduled_tasks) {
+  TaskHandler handler;
+  auto ran = std::make_shared<std::atomic_bool>(false);
+
+  handler.add_callable_after(std::chrono::milliseconds(20),
+                             [ran] { *ran = true; });
+  EXPECT_EQ(1U, handler.pending());
+  handler.stop();
+  EXPECT_EQ(0U, handler.pending());
+
+  handler.start();
+  handler.add_callable<Blocked>([] {});
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  handler.flush();
+  EXPECT_FALSE(ran->load());
+}
+
+TEST(task_handler, max_pending_refuses_work_instead_of_growing) {
+  TaskHandlerOptions options;
+  options.max_pending = 4;
+  TaskHandler handler{std::move(options)};
+
+  Gate gate{handler};
+  for (int i = 0; i < 4; i++)
+    handler.add_callable([] {});
+  EXPECT_EQ(4U, handler.pending());
+
+  EXPECT_THROW(handler.add_callable([] {}), conan::TaskHandlerQueueFull);
+  EXPECT_THROW(handler.add_callable<Future>([] { return kNum; }),
+               conan::TaskHandlerQueueFull);
+  EXPECT_THROW(handler.add_callable_after(std::chrono::hours(1), [] {}),
+               conan::TaskHandlerQueueFull);
+  // Refusing a submission must not disturb the work already accepted.
+  EXPECT_EQ(4U, handler.pending());
+
+  gate.release();
+  handler.flush();
+  handler.add_callable<Blocked>([] {});
+}
+
+TEST(task_handler, max_pending_does_not_refuse_recursive_submissions) {
+  TaskHandlerOptions options;
+  options.max_pending = 1;
+  TaskHandler handler{std::move(options)};
+
+  auto inner = std::make_shared<std::atomic_int>(0);
+  // Blocked and Future run inline on the worker thread, so a task that submits
+  // more work cannot be refused by a queue it is not going to be put in.
+  handler.add_callable<Blocked>([&handler, inner] {
+    handler.add_callable<Blocked>([inner] { ++*inner; });
+    *inner += handler.add_callable<Future>([] { return kNum; }).get();
+  });
+  EXPECT_EQ(kNum + 1, inner->load());
+}
+
+TEST(task_handler, submission_failures_share_one_base_type) {
+  TaskHandlerOptions options;
+  options.max_pending = 1;
+  TaskHandler handler{std::move(options)};
+
+  Gate gate{handler};
+  handler.add_callable([] {});
+  EXPECT_THROW(handler.add_callable([] {}), conan::TaskHandlerError);
+  gate.release();
+
+  handler.stop();
+  EXPECT_THROW(handler.add_callable([] {}), conan::TaskHandlerError);
+  EXPECT_THROW(handler.add_callable([] {}), std::runtime_error);
+}
+
+TEST(task_handler, runtime_version_matches_the_header) {
+  EXPECT_EQ(std::string{TASKHANDLER_VERSION_STRING},
+            std::string{conan::runtime_version()});
+  EXPECT_EQ(TASKHANDLER_VERSION_MAJOR * 10000 +
+                TASKHANDLER_VERSION_MINOR * 100 + TASKHANDLER_VERSION_PATCH,
+            TASKHANDLER_VERSION);
+}
+
 TEST(task_handler, exception_hook_sees_queued_failures) {
   auto reported = std::make_shared<std::promise<std::string>>();
   auto reported_future = reported->get_future();
@@ -529,6 +610,51 @@ TEST(task_handler, stop_from_inside_a_task_does_not_terminate) {
   });
   EXPECT_TRUE(ran->load());
   EXPECT_THROW(handler.add_callable([] {}), TaskHandlerStopped);
+}
+
+// Regression test: start() returned early whenever the thread object was still
+// joinable, which it always is after a stop() requested from inside a task,
+// since a worker cannot join itself. The handler could never be revived.
+TEST(task_handler, start_revives_a_handler_stopped_from_inside_a_task) {
+  TaskHandler handler;
+  handler.add_callable<Blocked>([&handler] { handler.stop(); });
+
+  // The worker finishes unwinding out of the task on its own, so wait for the
+  // stop to take effect rather than assuming it already has.
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (handler.running() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_FALSE(handler.running());
+
+  handler.start();
+  EXPECT_TRUE(handler.running());
+
+  int num_tmp{};
+  handler.add_callable<Blocked>([&] { num_tmp = kNum; });
+  EXPECT_EQ(kNum, num_tmp);
+}
+
+// Regression test: start() from inside a task took the lifecycle mutex, which a
+// concurrent stop() holds while waiting to join that very worker. Both sides
+// blocked forever.
+TEST(task_handler, start_from_inside_a_task_does_not_deadlock_against_stop) {
+  TaskHandler handler;
+  auto returned = std::make_shared<std::promise<void>>();
+  auto returned_future = returned->get_future();
+
+  handler.add_callable([&handler, returned] {
+    // Long enough for the stop() below to be waiting in join() by the time
+    // start() is called, which is the case that used to hang.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    handler.start();
+    returned->set_value();
+  });
+
+  handler.stop();
+  ASSERT_EQ(std::future_status::ready, returned_future.wait_for(kTimeout));
+  // The stop request stands: taking it back from inside a task is what would
+  // leave the stop() above waiting on a worker that never exits.
+  EXPECT_FALSE(handler.running());
 }
 
 TEST(task_handler, uninit_from_inside_a_task_does_not_terminate) {

@@ -31,4 +31,18 @@
 *.out
 *.app
 
+# Build and install trees. /out is what the presets use; the others are what
+# people end up with when they configure by hand or let an IDE do it.
 /out
+/build/
+/cmake-build-*/
+vcpkg_installed/
+CMakeUserPresets.json
+
+# Editor and tool droppings
+.cache/
+compile_commands.json
+.vscode/
+.idea/
+*.swp
+.DS_Store

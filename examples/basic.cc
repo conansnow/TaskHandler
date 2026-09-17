@@ -4,6 +4,7 @@
 #include "conan/task_handler.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -11,7 +12,9 @@
 
 using namespace std::chrono_literals;
 
-int main() {
+namespace {
+
+void tour() {
   conan::TaskHandlerOptions options;
   options.thread_name = "example";
   // Queued tasks have no future to fail through, so this is the only place a
@@ -71,6 +74,49 @@ int main() {
   handler.flush();
   std::cout << "pending=" << handler.pending() << '\n';
 
+  std::cout << "Backpressure: a bounded handler refuses work\n";
+  {
+    conan::TaskHandlerOptions bounded_options;
+    bounded_options.max_pending = 2;
+    conan::TaskHandler bounded{std::move(bounded_options)};
+
+    // Parking the worker means the two tasks below stay queued, so the third
+    // submission is the one the limit refuses. Waiting for the parked task to
+    // start matters: until it does, it is itself one of the two the queue
+    // holds.
+    auto entered = std::make_shared<std::promise<void>>();
+    auto release = std::make_shared<std::promise<void>>();
+    std::future<void> has_entered = entered->get_future();
+    std::shared_future<void> released = release->get_future().share();
+    bounded.add_callable([entered, released] {
+      entered->set_value();
+      released.wait();
+    });
+    has_entered.wait();
+
+    bounded.add_callable([] {});
+    std::cout << "  first accepted\n";
+    bounded.add_callable([] {});
+    std::cout << "  second accepted\n";
+    try {
+      bounded.add_callable([] {});
+    } catch (const conan::TaskHandlerQueueFull &refused) {
+      std::cout << "  refused: " << refused.what() << '\n';
+    }
+    release->set_value();
+  }
+
   // The destructor drains whatever is still runnable and joins the worker.
-  return 0;
+}
+
+} // namespace
+
+int main() {
+  try {
+    tour();
+  } catch (const std::exception &caught) {
+    std::cerr << "example failed: " << caught.what() << '\n';
+    return EXIT_FAILURE;
+  }
+  return EXIT_SUCCESS;
 }

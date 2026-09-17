@@ -9,12 +9,40 @@ project(TaskHandler
 
 option(TASKHANDLER_BUILD_TESTS "Build the TaskHandler test suite" ${PROJECT_IS_TOP_LEVEL})
 option(TASKHANDLER_BUILD_EXAMPLES "Build the TaskHandler examples" ${PROJECT_IS_TOP_LEVEL})
+option(TASKHANDLER_BUILD_BENCHMARKS "Build the TaskHandler benchmarks" ${PROJECT_IS_TOP_LEVEL})
 option(TASKHANDLER_INSTALL "Generate the TaskHandler install rules" ${PROJECT_IS_TOP_LEVEL})
 option(TASKHANDLER_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
-set(CMAKE_CXX_STANDARD 17)
+# The library needs C++17 and says so through target_compile_features, so this
+# only picks the standard the project's own tests, examples and benchmarks are
+# built with. Left overridable so that CI can rebuild the whole thing as C++20
+# or C++23 and catch anything a future standard breaks for consumers.
+if(NOT DEFINED CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD 17)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# The version is spelled out in the public header as well, because a
+# header-only consumer has no CMake project to ask. Checking them against each
+# other here means the two cannot drift apart unnoticed.
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/include/conan/task_handler.h TASKHANDLER_HEADER_TEXT)
+foreach(component MAJOR MINOR PATCH)
+    if(NOT TASKHANDLER_HEADER_TEXT MATCHES "#define TASKHANDLER_VERSION_${component} ([0-9]+)")
+        message(FATAL_ERROR "TASKHANDLER_VERSION_${component} is missing from include/conan/task_handler.h")
+    endif()
+    if(NOT "${CMAKE_MATCH_1}" STREQUAL "${PROJECT_VERSION_${component}}")
+        message(FATAL_ERROR
+            "version mismatch: include/conan/task_handler.h says "
+            "TASKHANDLER_VERSION_${component} ${CMAKE_MATCH_1}, project() says "
+            "${PROJECT_VERSION_${component}}")
+    endif()
+endforeach()
+if(NOT TASKHANDLER_HEADER_TEXT MATCHES "#define TASKHANDLER_VERSION_STRING \"${PROJECT_VERSION}\"")
+    message(FATAL_ERROR
+        "version mismatch: TASKHANDLER_VERSION_STRING in "
+        "include/conan/task_handler.h is not \"${PROJECT_VERSION}\"")
+endif()
 
 include(GNUInstallDirs)
 
@@ -47,7 +75,7 @@ endfunction()
 
 set(TASKHANDLER_HEADERS
     include/conan/task_handler.h
-    include/conan/task_handler-inl.h
+    include/conan/detail/task_handler-inl.h
     )
 
 # ---------------------------------------------------------------------------
@@ -105,6 +133,10 @@ endif()
 
 if(TASKHANDLER_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if(TASKHANDLER_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()
 
 if(TASKHANDLER_INSTALL)
