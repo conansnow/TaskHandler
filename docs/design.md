@@ -157,6 +157,12 @@ The awkward cases, all of which have regression tests:
 - **`flush()` from inside a task.** Returns immediately; waiting could only
   deadlock.
 
+The one case that has no good answer is *destroying* a handler from inside one of
+its own tasks. `stop()` can defer, but a destructor cannot: it has to leave the
+object gone by the time it returns, and the worker is still running in it. So
+that is a documented limit rather than something the library can absorb, the same
+way joining a thread from itself is.
+
 ## Backpressure
 
 The queue is unbounded by default, which is the right default for an event

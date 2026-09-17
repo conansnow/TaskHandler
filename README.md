@@ -377,6 +377,10 @@ What to watch out for:
   its handler will otherwise grow it without limit.
 - `Blocked` across two handlers that each block on the other deadlocks, exactly
   as two mutexes taken in opposite orders would.
+- A handler must outlive its worker, so it cannot be destroyed from inside one
+  of its own tasks. `stop()` from there is fine, but destruction cannot wait for
+  a thread it is running on, and the worker would go on using a destroyed
+  object.
 - Priority does not preempt. One long task delays everything behind it.
 - Mixing `TaskHandler::header_only` and `TaskHandler::task_handler` in one
   binary gives you two sets of shared handlers. Pick one.

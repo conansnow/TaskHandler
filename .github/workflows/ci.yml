@@ -249,9 +249,12 @@ jobs:
 
       # The test file is excluded on purpose: its findings are almost entirely
       # GoogleTest macro expansion, and analysing it takes minutes.
+      #
+      # --warnings-as-errors because clang-tidy exits 0 on warnings, so without
+      # it this job only ever caught a translation unit that would not compile.
       - name: Run clang-tidy
         run: |
           clang-tidy-18 --version
-          clang-tidy-18 -p out/build/debug \
+          clang-tidy-18 -p out/build/debug --warnings-as-errors='*' \
             src/task_handler.cc examples/basic.cc \
             benchmarks/task_handler_benchmark.cc

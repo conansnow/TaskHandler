@@ -17,6 +17,10 @@
 // The version is spelled out here as well as in CMake, because a header-only
 // consumer has no CMake project to ask. The build checks the two against each
 // other, so they cannot drift apart.
+//
+// Macros rather than constants on purpose: a consumer has to be able to test
+// the version in a #if, before any of the declarations below exist.
+// NOLINTBEGIN(cppcoreguidelines-macro-usage,cppcoreguidelines-macro-to-enum,modernize-macro-to-enum)
 #define TASKHANDLER_VERSION_MAJOR 0
 #define TASKHANDLER_VERSION_MINOR 2
 #define TASKHANDLER_VERSION_PATCH 0
@@ -26,6 +30,7 @@
 #define TASKHANDLER_VERSION                                                    \
   (TASKHANDLER_VERSION_MAJOR * 10000 + TASKHANDLER_VERSION_MINOR * 100 +       \
    TASKHANDLER_VERSION_PATCH)
+// NOLINTEND(cppcoreguidelines-macro-usage,cppcoreguidelines-macro-to-enum,modernize-macro-to-enum)
 
 #if defined(TASKHANDLER_COMPILED_LIB)
 #define TASKHANDLER_INLINE
