@@ -444,22 +444,32 @@ TEST(task_handler, cancel_runs_task_destructor_without_holding_the_mutex) {
   auto reentered = std::make_shared<std::atomic_bool>(false);
   Gate gate{handler};
 
-  auto touch = std::shared_ptr<void>(nullptr, [&handler, reentered](void *) {
-    (void)handler.pending();
-    *reentered = true;
-  });
-  const TaskId queued = handler.add_callable([touch] { (void)touch; });
+  struct Touch {
+    Touch(TaskHandler *owner, std::shared_ptr<std::atomic_bool> done)
+        : handler{owner}, flag{std::move(done)} {}
+    TaskHandler *handler{};
+    std::shared_ptr<std::atomic_bool> flag;
+    ~Touch() {
+      if (handler == nullptr || !flag)
+        return;
+      (void)handler->pending();
+      *flag = true;
+    }
+  };
+
+  const TaskId queued = handler.add_callable(
+      [touch = std::make_shared<Touch>(&handler, reentered)] {
+        (void)touch;
+      });
   EXPECT_TRUE(handler.cancel(queued));
   EXPECT_TRUE(reentered->load());
 
   *reentered = false;
-  auto touch_timed =
-      std::shared_ptr<void>(nullptr, [&handler, reentered](void *) {
-        (void)handler.pending();
-        *reentered = true;
-      });
   const TaskId delayed = handler.add_callable_after(
-      std::chrono::hours(1), [touch_timed] { (void)touch_timed; });
+      std::chrono::hours(1),
+      [touch = std::make_shared<Touch>(&handler, reentered)] {
+        (void)touch;
+      });
   EXPECT_TRUE(handler.cancel(delayed));
   EXPECT_TRUE(reentered->load());
 
@@ -611,12 +621,24 @@ TEST(task_handler, stop_discards_undue_scheduled_tasks) {
 TEST(task_handler, discarded_timer_destructor_can_call_start_during_stop) {
   TaskHandler handler;
   auto returned = std::make_shared<std::atomic_bool>(false);
-  auto touch = std::shared_ptr<void>(nullptr, [&handler, returned](void *) {
-    handler.start();
-    handler.stop();
-    *returned = true;
-  });
-  handler.add_callable_after(std::chrono::hours(1), [touch] { (void)touch; });
+
+  struct Touch {
+    Touch(TaskHandler *owner, std::shared_ptr<std::atomic_bool> done)
+        : handler{owner}, flag{std::move(done)} {}
+    TaskHandler *handler{};
+    std::shared_ptr<std::atomic_bool> flag;
+    ~Touch() {
+      if (handler == nullptr || !flag)
+        return;
+      handler->start();
+      handler->stop();
+      *flag = true;
+    }
+  };
+
+  handler.add_callable_after(
+      std::chrono::hours(1),
+      [touch = std::make_shared<Touch>(&handler, returned)] { (void)touch; });
   handler.stop();
   EXPECT_TRUE(returned->load());
   EXPECT_FALSE(handler.running());
