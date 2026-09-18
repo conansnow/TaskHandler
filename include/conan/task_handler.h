@@ -201,14 +201,27 @@ public:
       : TaskHandlerError{"conan::TaskHandler queue is full"} {}
 };
 
-// Identifies a submitted task for as long as it has not started running.
-// Default-constructed ids are invalid and cancelling one is a no-op.
+// Identifies a submitted task so it can be cancelled. valid() is true for any
+// id returned by a submission, including after the task has run or been
+// cancelled; it does not mean the task is still pending. Default-constructed
+// ids are invalid and cancelling one is a no-op.
 class TaskId {
 public:
   TaskId() = default;
 
   [[nodiscard]] bool valid() const noexcept { return sequence_ != 0; }
   explicit operator bool() const noexcept { return valid(); }
+
+  [[nodiscard]] friend bool operator==(const TaskId &lhs,
+                                       const TaskId &rhs) noexcept {
+    return lhs.kind_ == rhs.kind_ && lhs.priority_ == rhs.priority_ &&
+           lhs.sequence_ == rhs.sequence_ && lhs.deadline_ == rhs.deadline_;
+  }
+
+  [[nodiscard]] friend bool operator!=(const TaskId &lhs,
+                                       const TaskId &rhs) noexcept {
+    return !(lhs == rhs);
+  }
 
 private:
   friend class TaskHandler;
@@ -247,9 +260,10 @@ struct TaskHandlerOptions {
 class TASKHANDLER_API TaskHandler {
 public:
   // Constructing a handler starts its worker thread; destroying it drains the
-  // runnable queue and joins.
+  // runnable queue and joins. The destructor swallows errors from join()
+  // rather than throwing, because a destructor must not.
   explicit TaskHandler(TaskHandlerOptions options = {});
-  ~TaskHandler();
+  ~TaskHandler() noexcept;
 
   TaskHandler(const TaskHandler &) = delete;
   TaskHandler &operator=(const TaskHandler &) = delete;
@@ -282,19 +296,39 @@ public:
 
   // Submits `callable` to run no earlier than `delay` from now. The task
   // becomes runnable at its deadline and is then ordered by priority like any
-  // other task, so a busy handler may run it later than requested.
-  template <typename Rep, typename Period, typename C,
+  // other task, so a busy handler may run it later than requested. Delayed
+  // work is never run inline, even when already on the worker: getting a
+  // delayed Future from that thread would wait for a task that cannot start
+  // until the current one returns.
+  template <typename T = Queued, typename Rep, typename Period, typename C,
+            std::enable_if_t<detail::is_queued_v<T>, int> = 0,
             std::enable_if_t<detail::is_task_v<C>, int> = 0>
   TaskId add_callable_after(std::chrono::duration<Rep, Period> delay,
                             C &&callable, int priority = 0);
 
-  template <typename C, std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  template <typename T, typename Rep, typename Period, typename C,
+            std::enable_if_t<detail::is_future_v<T>, int> = 0,
+            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  std::future<detail::TaskResultT<C>>
+  add_callable_after(std::chrono::duration<Rep, Period> delay, C &&callable,
+                     int priority = 0);
+
+  template <typename T = Queued, typename C,
+            std::enable_if_t<detail::is_queued_v<T>, int> = 0,
+            std::enable_if_t<detail::is_task_v<C>, int> = 0>
   TaskId add_callable_at(std::chrono::steady_clock::time_point deadline,
                          C &&callable, int priority = 0);
 
+  template <typename T, typename C,
+            std::enable_if_t<detail::is_future_v<T>, int> = 0,
+            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  std::future<detail::TaskResultT<C>>
+  add_callable_at(std::chrono::steady_clock::time_point deadline, C &&callable,
+                  int priority = 0);
+
   // Cancels a task that has not started running yet. Returns false if the task
   // already ran, is running, was already cancelled, or the id is invalid.
-  bool cancel(const TaskId &id);
+  [[nodiscard]] bool cancel(const TaskId &id);
 
   // Tasks accepted but not yet started, including those waiting on a deadline.
   // Excludes the task currently running.
@@ -448,20 +482,50 @@ std::future<detail::TaskResultT<C>> TaskHandler::add_callable(C &&callable,
   return future;
 }
 
-template <typename Rep, typename Period, typename C,
+template <typename T, typename Rep, typename Period, typename C,
+          std::enable_if_t<detail::is_queued_v<T>, int>,
           std::enable_if_t<detail::is_task_v<C>, int>>
 TaskId TaskHandler::add_callable_after(std::chrono::duration<Rep, Period> delay,
                                        C &&callable, int priority) {
-  return add_callable_at(std::chrono::steady_clock::now() + delay,
-                         std::forward<C>(callable), priority);
+  return add_callable_at<Queued>(std::chrono::steady_clock::now() + delay,
+                                 std::forward<C>(callable), priority);
 }
 
-template <typename C, std::enable_if_t<detail::is_task_v<C>, int>>
+template <typename T, typename Rep, typename Period, typename C,
+          std::enable_if_t<detail::is_future_v<T>, int>,
+          std::enable_if_t<detail::is_task_v<C>, int>>
+std::future<detail::TaskResultT<C>>
+TaskHandler::add_callable_after(std::chrono::duration<Rep, Period> delay,
+                                C &&callable, int priority) {
+  return add_callable_at<Future>(std::chrono::steady_clock::now() + delay,
+                                 std::forward<C>(callable), priority);
+}
+
+template <typename T, typename C, std::enable_if_t<detail::is_queued_v<T>, int>,
+          std::enable_if_t<detail::is_task_v<C>, int>>
 TaskId
 TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
                              C &&callable, int priority) {
   return submit_at(detail::make_task(std::forward<C>(callable)), priority,
                    deadline);
+}
+
+template <typename T, typename C, std::enable_if_t<detail::is_future_v<T>, int>,
+          std::enable_if_t<detail::is_task_v<C>, int>>
+std::future<detail::TaskResultT<C>>
+TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
+                             C &&callable, int priority) {
+  // Delayed work always queues, including when already on the worker. Running
+  // it inline would either ignore the deadline or park the worker until it,
+  // and getting the future from this thread would wait for a task that cannot
+  // start until the current one returns.
+  std::packaged_task<detail::TaskResultT<C>()> packaged{
+      std::forward<C>(callable)};
+  std::future<detail::TaskResultT<C>> future = packaged.get_future();
+  submit_at(detail::make_task(
+                [packaged = std::move(packaged)]() mutable { packaged(); }),
+            priority, deadline);
+  return future;
 }
 
 } // namespace conan

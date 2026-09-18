@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -65,6 +66,11 @@ void tour() {
       handler.add_callable_after(50ms, [] { std::cout << "  never runs\n"; });
   std::cout << "  cancelled: " << std::boolalpha << handler.cancel(doomed)
             << '\n';
+
+  std::cout << "Delayed Future: a result once the deadline is due\n";
+  std::future<int> later =
+      handler.add_callable_after<conan::Future>(10ms, [] { return 42; });
+  std::cout << "  later=" << later.get() << '\n';
 
   std::cout << "Failure in a Queued task\n";
   handler.add_callable(

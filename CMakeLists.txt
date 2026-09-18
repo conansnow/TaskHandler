@@ -163,11 +163,14 @@ if(TASKHANDLER_INSTALL)
         )
     write_basic_package_version_file(
         ${CMAKE_CURRENT_BINARY_DIR}/TaskHandlerConfigVersion.cmake
-        COMPATIBILITY SameMajorVersion
+        # 0.x minors may break API or ABI. SameMajorVersion would let
+        # find_package(TaskHandler 0.2) accept a 0.3 install.
+        COMPATIBILITY SameMinorVersion
         )
     install(FILES
         ${CMAKE_CURRENT_BINARY_DIR}/TaskHandlerConfig.cmake
         ${CMAKE_CURRENT_BINARY_DIR}/TaskHandlerConfigVersion.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TaskHandler
         )
+    install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 endif()

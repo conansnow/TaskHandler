@@ -33,8 +33,9 @@ elseif(TASKHANDLER_CONSUMER_MODE STREQUAL "fetchcontent")
     # Tests, examples, benchmarks and install rules default to on only when
     # TaskHandler is the top-level project. A consumer that pays for any of them
     # by accident would find out from its own build times, not from a message.
-    foreach(unwanted task_handler_test_task_handler task_handler_example
-            task_handler_benchmark)
+    foreach(unwanted task_handler_test_task_handler
+            task_handler_test_header_only task_handler_example
+            task_handler_example_header_only task_handler_benchmark)
         if(TARGET ${unwanted})
             message(FATAL_ERROR
                 "TaskHandler built its own ${unwanted} inside a consumer build")
