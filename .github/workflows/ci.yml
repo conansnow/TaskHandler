@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -48,6 +51,10 @@ jobs:
             os: macos-latest
             preset: debug
             extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
+          - name: macos-clang-release
+            os: macos-latest
+            preset: release
+            extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
           - name: windows-msvc-debug
             os: windows-latest
             preset: debug
@@ -58,7 +65,7 @@ jobs:
             extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
@@ -98,7 +105,7 @@ jobs:
         standard: [26]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
@@ -120,18 +127,33 @@ jobs:
   # The checks that matter most for a threading library, and the reason the
   # asan and tsan presets exist.
   sanitizers:
-    name: ${{ matrix.preset }}
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        preset: [asan, tsan]
+        include:
+          - name: asan
+            preset: asan
+          - name: tsan
+            preset: tsan
+          - name: asan-clang
+            preset: asan
+            cc: clang
+            cxx: clang++
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
+
+      - name: Select compiler
+        if: matrix.cc != ''
+        shell: bash
+        run: |
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -152,7 +174,7 @@ jobs:
     name: repeat under tsan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
@@ -173,17 +195,25 @@ jobs:
   # have caught the installed header-only target being exported under the wrong
   # name.
   consume:
-    name: install and consume
-    runs-on: ubuntu-latest
+    name: install and consume (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+            extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
+
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
 
       - name: Build and install
         run: |
-          cmake --preset release
+          cmake --preset release ${{ matrix.extra }}
           cmake --build --preset release
           cmake --install out/build/release
 
@@ -211,17 +241,14 @@ jobs:
     name: clang-format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pinned: clang-format's output drifts between major versions, so an
       # unpinned runner upgrade would fail this job on untouched code.
+      # llvm.sh is checksummed in ci/install-llvm-tools.sh because it runs
+      # as root.
       - name: Install clang-format
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget lsb-release software-properties-common gnupg
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          sudo bash /tmp/llvm.sh 23
-          sudo apt-get install -y clang-format-23
+        run: ci/install-llvm-tools.sh clang-format-23
 
       # Driven off git rather than a list of directories, so a source file in a
       # directory nobody remembered to add here cannot escape the check.
@@ -234,7 +261,7 @@ jobs:
     name: clang-tidy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
@@ -244,12 +271,7 @@ jobs:
       # default. Without this, every include resolves to "file not found" and
       # the results are meaningless rather than merely wrong.
       - name: Install clang-tidy
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget lsb-release software-properties-common gnupg
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          sudo bash /tmp/llvm.sh 23
-          sudo apt-get install -y clang-tidy-23 libstdc++-14-dev
+        run: ci/install-llvm-tools.sh clang-tidy-23 libstdc++-14-dev
 
       - name: Configure
         run: cmake --preset debug
