@@ -420,6 +420,52 @@ TEST(task_handler, cancel_of_a_finished_or_invalid_task_is_false) {
   EXPECT_FALSE(TaskId{}.valid());
 }
 
+TEST(task_handler, cancel_of_a_running_task_is_false) {
+  TaskHandler handler;
+  auto entered = std::make_shared<std::promise<void>>();
+  auto release = std::make_shared<std::promise<void>>();
+  auto entered_future = entered->get_future();
+  std::shared_future<void> released = release->get_future().share();
+
+  const TaskId id = handler.add_callable([entered, released] {
+    entered->set_value();
+    released.wait();
+  });
+  ASSERT_EQ(std::future_status::ready, entered_future.wait_for(kTimeout));
+  EXPECT_FALSE(handler.cancel(id));
+  release->set_value();
+  handler.flush();
+}
+
+// Regression: cancel() used to destroy the callable while holding mutex_, so a
+// destructor that called back into the handler deadlocked.
+TEST(task_handler, cancel_runs_task_destructor_without_holding_the_mutex) {
+  TaskHandler handler;
+  auto reentered = std::make_shared<std::atomic_bool>(false);
+  Gate gate{handler};
+
+  auto touch = std::shared_ptr<void>(nullptr, [&handler, reentered](void *) {
+    (void)handler.pending();
+    *reentered = true;
+  });
+  const TaskId queued = handler.add_callable([touch] { (void)touch; });
+  EXPECT_TRUE(handler.cancel(queued));
+  EXPECT_TRUE(reentered->load());
+
+  *reentered = false;
+  auto touch_timed =
+      std::shared_ptr<void>(nullptr, [&handler, reentered](void *) {
+        (void)handler.pending();
+        *reentered = true;
+      });
+  const TaskId delayed = handler.add_callable_after(
+      std::chrono::hours(1), [touch_timed] { (void)touch_timed; });
+  EXPECT_TRUE(handler.cancel(delayed));
+  EXPECT_TRUE(reentered->load());
+
+  gate.release();
+}
+
 TEST(task_handler, task_ids_compare_by_value) {
   EXPECT_EQ(TaskId{}, TaskId{});
   EXPECT_FALSE(TaskId{} != TaskId{});
@@ -554,10 +600,26 @@ TEST(task_handler, stop_discards_undue_scheduled_tasks) {
   EXPECT_EQ(0U, handler.pending());
 
   handler.start();
+  EXPECT_EQ(0U, handler.pending());
   handler.add_callable<Blocked>([] {});
-  std::this_thread::sleep_for(std::chrono::milliseconds(60));
-  handler.flush();
   EXPECT_FALSE(ran->load());
+}
+
+// Regression: stop() used to clear worker_id_ before destroying undue timers,
+// so a destructor that called start() or stop() took lifecycle_mutex_ against
+// the join already in progress and deadlocked.
+TEST(task_handler, discarded_timer_destructor_can_call_start_during_stop) {
+  TaskHandler handler;
+  auto returned = std::make_shared<std::atomic_bool>(false);
+  auto touch = std::shared_ptr<void>(nullptr, [&handler, returned](void *) {
+    handler.start();
+    handler.stop();
+    *returned = true;
+  });
+  handler.add_callable_after(std::chrono::hours(1), [touch] { (void)touch; });
+  handler.stop();
+  EXPECT_TRUE(returned->load());
+  EXPECT_FALSE(handler.running());
 }
 
 TEST(task_handler, delayed_future_returns_the_tasks_own_type) {
@@ -623,6 +685,22 @@ TEST(task_handler, max_pending_refuses_work_instead_of_growing) {
   gate.release();
   handler.flush();
   handler.add_callable<Blocked>([] {});
+}
+
+TEST(task_handler, max_pending_counts_ready_and_timed_together) {
+  TaskHandlerOptions options;
+  options.max_pending = 2;
+  TaskHandler handler{std::move(options)};
+
+  Gate gate{handler};
+  handler.add_callable([] {});
+  handler.add_callable_after(std::chrono::hours(1), [] {});
+  EXPECT_EQ(2U, handler.pending());
+  EXPECT_THROW(handler.add_callable([] {}), conan::TaskHandlerQueueFull);
+  EXPECT_THROW(handler.add_callable_after(std::chrono::hours(1), [] {}),
+               conan::TaskHandlerQueueFull);
+  EXPECT_EQ(2U, handler.pending());
+  gate.release();
 }
 
 TEST(task_handler, max_pending_does_not_refuse_recursive_submissions) {
@@ -701,6 +779,20 @@ TEST(task_handler, exception_hook_is_not_used_for_blocked_or_future) {
   EXPECT_EQ(0, hook_calls->load());
 }
 
+TEST(task_handler, exception_hook_failure_does_not_kill_the_worker) {
+  TaskHandlerOptions options;
+  options.on_exception = [](std::exception_ptr) {
+    throw std::runtime_error("hook boom");
+  };
+  TaskHandler handler{std::move(options)};
+
+  handler.add_callable([] { throw std::runtime_error("queued boom"); });
+
+  int num_tmp{};
+  handler.add_callable<Blocked>([&] { num_tmp = kNum; });
+  EXPECT_EQ(kNum, num_tmp);
+}
+
 TEST(task_handler, submitting_to_a_stopped_handler_throws) {
   TaskHandler handler;
   handler.stop();
@@ -710,6 +802,31 @@ TEST(task_handler, submitting_to_a_stopped_handler_throws) {
   EXPECT_THROW(handler.add_callable<Future>([] {}), TaskHandlerStopped);
   EXPECT_THROW(handler.add_callable_after(std::chrono::seconds(1), [] {}),
                TaskHandlerStopped);
+}
+
+TEST(task_handler, stopped_and_full_are_catchable_by_their_own_type) {
+  TaskHandler handler;
+  handler.stop();
+  try {
+    handler.add_callable([] {});
+    FAIL() << "expected TaskHandlerStopped";
+  } catch (const TaskHandlerStopped &) {
+  } catch (...) {
+    FAIL() << "TaskHandlerStopped was not catchable by type";
+  }
+
+  TaskHandlerOptions options;
+  options.max_pending = 1;
+  TaskHandler bounded{std::move(options)};
+  Gate gate{bounded};
+  bounded.add_callable([] {});
+  try {
+    bounded.add_callable([] {});
+    FAIL() << "expected TaskHandlerQueueFull";
+  } catch (const conan::TaskHandlerQueueFull &) {
+  } catch (...) {
+    FAIL() << "TaskHandlerQueueFull was not catchable by type";
+  }
 }
 
 TEST(task_handler, stop_and_start_are_idempotent_and_reversible) {
@@ -775,9 +892,9 @@ TEST(task_handler, start_from_inside_a_task_does_not_deadlock_against_stop) {
   auto returned_future = returned->get_future();
 
   handler.add_callable([&handler, returned] {
-    // Long enough for the stop() below to be waiting in join() by the time
-    // start() is called, which is the case that used to hang.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    while (handler.running() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::yield();
     handler.start();
     returned->set_value();
   });
