@@ -110,10 +110,12 @@ template <typename C>
 concept TaskCallable = std::invocable<std::decay_t<C> &>;
 
 template <typename D>
-concept ChronoDuration = requires {
-  typename D::rep;
-  typename D::period;
-} && std::same_as<D, std::chrono::duration<typename D::rep, typename D::period>>;
+concept ChronoDuration =
+    requires {
+      typename D::rep;
+      typename D::period;
+    } &&
+    std::same_as<D, std::chrono::duration<typename D::rep, typename D::period>>;
 
 template <typename C>
 using TaskResultT = std::invoke_result_t<std::decay_t<C> &>;
@@ -273,8 +275,8 @@ public:
 
   template <detail::FuturePolicy T, detail::ChronoDuration D,
             detail::TaskCallable C>
-  std::future<detail::TaskResultT<C>>
-  add_callable_after(D delay, C &&callable, int priority = 0);
+  std::future<detail::TaskResultT<C>> add_callable_after(D delay, C &&callable,
+                                                         int priority = 0);
 
   template <detail::QueuedPolicy T = Queued, detail::TaskCallable C>
   TaskId add_callable_at(std::chrono::steady_clock::time_point deadline,
