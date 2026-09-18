@@ -42,6 +42,17 @@ The sanitizer runs are not optional for a change to the queue or to the
 lifecycle. A threading bug that only shows up one run in fifty is the normal
 case here, which is why the TSan job repeats.
 
+A packaging change (`CMakeLists.txt`, install rules, exported targets) should
+also prove the consumer project still builds:
+
+```sh
+cmake --preset release && cmake --build --preset release
+cmake --install out/build/release
+cmake -S ci/consumer -B out/consumer-find-package -G Ninja \
+    -DCMAKE_PREFIX_PATH="$PWD/out/install/release"
+cmake --build out/consumer-find-package
+```
+
 `clang-format` and `clang-tidy` are pinned to major version 18 because their
 output drifts between releases; a different version may disagree with CI.
 
@@ -91,4 +102,4 @@ fails the build rather than shipping.
 Semantic versioning, with the usual pre-1.0 caveat: while the major version is
 0, a minor bump may break API or ABI. Do not bump the version in a feature pull
 request; entries accumulate under `## [Unreleased]` and the release bumps it
-once.
+once. The installed package uses `SameMinorVersion` for that reason.

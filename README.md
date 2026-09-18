@@ -166,14 +166,22 @@ handler.add_callable_at(deadline, [] { give_up(); });
 
 if (too_late)
   handler.cancel(id);   // true if the task had not started yet
+
+std::future<Reply> reply =
+    handler.add_callable_after<conan::Future>(5s, [] { return fetch(); });
 ```
 
 A delayed task becomes runnable at its deadline and is then ordered by priority
 like anything else, so a busy handler may run it later than asked. It is never
-run earlier.
+run earlier. Delayed work is never run inline, even from the worker thread:
+getting that future from inside a task would wait for work that cannot start
+until the current task returns.
 
 `cancel` returns `false` for a task that already ran, is running, or was
-already cancelled.
+already cancelled. A `TaskId` stays `valid()` after that; it names a submission,
+it does not mean the task is still pending. Delayed `Future` submissions return
+the future rather than an id, so they are dropped by `stop()` (or destruction)
+instead, which leaves the future broken.
 
 ## Errors
 
@@ -282,7 +290,7 @@ taken back from another thread.
 
 ```cpp
 std::size_t TaskHandler::pending() const;   // accepted, not yet started
-void TaskHandler::flush();                  // block until the queue is empty
+void TaskHandler::flush();                  // wait for runnable work only
 bool TaskHandler::is_current_thread() const;
 ```
 
@@ -304,8 +312,9 @@ struct TaskHandlerOptions {
 truncates it to 15 characters. The shared handlers name themselves
 `conan-task-0` through `conan-task-2`.
 
-Options are read once, when the worker starts. Changing them afterwards means
-constructing another handler.
+`thread_name` is applied when the worker starts. `on_exception` and
+`max_pending` apply for the life of the handler. Changing any of them afterwards
+means constructing another handler.
 
 ## Version
 

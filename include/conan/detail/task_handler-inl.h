@@ -30,7 +30,13 @@ TASKHANDLER_INLINE TaskHandler::TaskHandler(TaskHandlerOptions options)
   start();
 }
 
-TASKHANDLER_INLINE TaskHandler::~TaskHandler() { stop(); }
+TASKHANDLER_INLINE TaskHandler::~TaskHandler() noexcept {
+  try {
+    stop();
+  } catch (...) { // NOLINT(bugprone-empty-catch)
+    // std::thread::join can throw system_error. A destructor must not.
+  }
+}
 
 TASKHANDLER_INLINE void TaskHandler::start() {
   // Taking the lifecycle mutex from inside a task would deadlock against a
@@ -114,7 +120,11 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
       } catch (...) {
         report_exception(std::current_exception());
       }
-      task.reset();
+      try {
+        task.reset();
+      } catch (...) {
+        report_exception(std::current_exception());
+      }
       lock.lock();
 
       busy_ = false;
@@ -145,6 +155,11 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
   worker_id_ = std::thread::id{};
   idle_cv_.notify_all();
   lock.unlock();
+  try {
+    discarded.clear();
+  } catch (...) {
+    report_exception(std::current_exception());
+  }
 }
 
 TASKHANDLER_INLINE void
@@ -286,16 +301,36 @@ public:
   }
 
   void start_all() {
-    std::lock_guard<std::mutex> lock{mutex_};
-    for (std::size_t index = 0; index < TaskHandler::instance_count(); index++)
-      create(index)->start();
+    std::array<TaskHandler *, TaskHandler::instance_count()> snapshot{};
+    {
+      std::lock_guard<std::mutex> lock{mutex_};
+      for (std::size_t index = 0; index < TaskHandler::instance_count();
+           index++)
+        snapshot[index] = create(index);
+    }
+    // start() waits for the worker handshake and may join an exiting thread.
+    // Neither can run while this mutex is held: a task on a shared handler
+    // that calls instance() would wait for us, and we would wait for it.
+    for (TaskHandler *handler : snapshot)
+      handler->start();
   }
 
   void stop_all() {
-    std::lock_guard<std::mutex> lock{mutex_};
-    for (TaskHandler *handler : handlers_)
-      if (handler != nullptr)
-        handler->stop();
+    // Two passes so a handler created by instance() while the first pass was
+    // joining is still stopped. The registry mutex is not held across stop():
+    // join waits for the current task, and that task is allowed to call
+    // instance() / init() / uninit().
+    for (int pass = 0; pass < 2; pass++) {
+      std::array<TaskHandler *, TaskHandler::instance_count()> snapshot{};
+      {
+        std::lock_guard<std::mutex> lock{mutex_};
+        snapshot = handlers_;
+      }
+      for (TaskHandler *handler : snapshot) {
+        if (handler != nullptr)
+          handler->stop();
+      }
+    }
   }
 
 private:

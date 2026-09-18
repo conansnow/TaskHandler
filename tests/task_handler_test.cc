@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -48,7 +49,10 @@ public:
       entered->set_value();
       release_future.wait();
     });
-    entered_future.wait_for(kTimeout);
+    if (entered_future.wait_for(kTimeout) != std::future_status::ready) {
+      throw std::runtime_error(
+          "TaskHandler test gate: worker did not enter within timeout");
+    }
   }
 
   // Releasing from the destructor keeps a failed ASSERT from leaving the
@@ -360,6 +364,16 @@ TEST(task_handler, flush_from_inside_a_task_returns_instead_of_deadlocking) {
   EXPECT_TRUE(ran->load());
 }
 
+TEST(task_handler, flush_does_not_wait_for_delayed_tasks) {
+  TaskHandler handler;
+  auto ran = std::make_shared<std::atomic_bool>(false);
+  handler.add_callable_after(std::chrono::hours(1), [ran] { *ran = true; });
+  EXPECT_EQ(1U, handler.pending());
+  handler.flush();
+  EXPECT_EQ(1U, handler.pending());
+  EXPECT_FALSE(ran->load());
+}
+
 TEST(task_handler, cancel_removes_a_queued_task) {
   TaskHandler handler;
   auto recorder = std::make_shared<Recorder>();
@@ -392,6 +406,21 @@ TEST(task_handler, cancel_of_a_finished_or_invalid_task_is_false) {
   EXPECT_FALSE(TaskId{}.valid());
 }
 
+TEST(task_handler, task_ids_compare_by_value) {
+  EXPECT_EQ(TaskId{}, TaskId{});
+  EXPECT_FALSE(TaskId{} != TaskId{});
+
+  TaskHandler handler;
+  Gate gate{handler};
+  const TaskId first = handler.add_callable([] {});
+  const TaskId second = handler.add_callable([] {});
+  const TaskId copy = first;
+  EXPECT_EQ(first, copy);
+  EXPECT_NE(first, second);
+  EXPECT_TRUE(first.valid());
+  EXPECT_TRUE(first);
+}
+
 TEST(task_handler, scheduled_task_runs_no_earlier_than_its_delay) {
   TaskHandler handler;
   constexpr auto kDelay = std::chrono::milliseconds(60);
@@ -410,35 +439,28 @@ TEST(task_handler, scheduled_task_runs_no_earlier_than_its_delay) {
 TEST(task_handler, scheduled_tasks_run_in_deadline_order) {
   TaskHandler handler;
   auto recorder = std::make_shared<Recorder>();
-  auto first = std::make_shared<std::promise<void>>();
-  auto first_future = first->get_future();
   auto done = std::make_shared<std::promise<void>>();
   auto done_future = done->get_future();
 
   // Park the worker so every timer is queued before any of them can run.
   // Without that, a slow first wakeup promotes several due timers in one
-  // go, they fall into ready_ in submission order, and this test flakes.
+  // go; they then fall into ready_ by sequence (submission order), which is
+  // 3, 1, 2 rather than deadline order. Release immediately after queueing
+  // so the worker wait_until's the earliest deadline from a known start.
+  // Sleeping until "only the first is due" overshoots on a loaded runner
+  // and promotes 1 and 2 together, which is a test flake, not a product bug.
   Gate gate{handler};
   const auto base = std::chrono::steady_clock::now();
-  constexpr auto kSlot = std::chrono::milliseconds(200);
+  constexpr auto kSlot = std::chrono::milliseconds(100);
 
   handler.add_callable_at(base + 3 * kSlot,
                           [recorder] { recorder->record(3); });
-  handler.add_callable_at(base + 1 * kSlot, [recorder, first] {
-    recorder->record(1);
-    first->set_value();
-  });
+  handler.add_callable_at(base + 1 * kSlot,
+                          [recorder] { recorder->record(1); });
   handler.add_callable_at(base + 2 * kSlot,
                           [recorder] { recorder->record(2); });
   handler.add_callable_at(base + 4 * kSlot, [done] { done->set_value(); });
-
-  // Only the 200ms task is due. Releasing now means the worker must honour
-  // that deadline rather than the fact that 3 was submitted first.
-  std::this_thread::sleep_until(base + kSlot + kSlot / 2);
   gate.release();
-
-  ASSERT_EQ(std::future_status::ready, first_future.wait_for(kTimeout));
-  EXPECT_EQ(std::vector<int>({1}), recorder->snapshot());
 
   ASSERT_EQ(std::future_status::ready, done_future.wait_for(kTimeout));
   EXPECT_EQ(std::vector<int>({1, 2, 3}), recorder->snapshot());
@@ -455,6 +477,42 @@ TEST(task_handler, scheduled_task_can_be_cancelled_before_its_deadline) {
   EXPECT_EQ(0U, handler.pending());
   EXPECT_FALSE(handler.cancel(id));
 
+  handler.flush();
+  EXPECT_FALSE(ran->load());
+}
+
+// Promotion from timed_ to ready_ keeps the original sequence number, so
+// cancel still finds the task after it has become runnable.
+TEST(task_handler, cancel_works_after_a_timer_is_promoted) {
+  TaskHandler handler;
+  auto ran = std::make_shared<std::atomic_bool>(false);
+
+  Gate first{handler};
+  const TaskId id = handler.add_callable_at(std::chrono::steady_clock::now() -
+                                                std::chrono::seconds(1),
+                                            [ran] { *ran = true; });
+
+  auto park_entered = std::make_shared<std::promise<void>>();
+  auto park_release = std::make_shared<std::promise<void>>();
+  auto park_entered_future = park_entered->get_future();
+  std::shared_future<void> park_released = park_release->get_future().share();
+  // Higher priority than the promoted timer, so the worker parks here after
+  // moving the due task into ready_ rather than running it.
+  handler.add_callable(
+      [park_entered, park_released] {
+        park_entered->set_value();
+        park_released.wait();
+      },
+      10);
+
+  first.release();
+  ASSERT_EQ(std::future_status::ready, park_entered_future.wait_for(kTimeout));
+  EXPECT_EQ(1U, handler.pending());
+  EXPECT_TRUE(handler.cancel(id));
+  EXPECT_EQ(0U, handler.pending());
+  EXPECT_FALSE(handler.cancel(id));
+
+  park_release->set_value();
   handler.flush();
   EXPECT_FALSE(ran->load());
 }
@@ -486,6 +544,48 @@ TEST(task_handler, stop_discards_undue_scheduled_tasks) {
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
   handler.flush();
   EXPECT_FALSE(ran->load());
+}
+
+TEST(task_handler, delayed_future_returns_the_tasks_own_type) {
+  TaskHandler handler;
+  std::future<int> answer = handler.add_callable_at<Future>(
+      std::chrono::steady_clock::now(), [] { return kNum; });
+  ASSERT_EQ(std::future_status::ready, answer.wait_for(kTimeout));
+  EXPECT_EQ(kNum, answer.get());
+}
+
+TEST(task_handler, delayed_future_propagates_exception) {
+  TaskHandler handler;
+  std::future<int> failed = handler.add_callable_at<Future>(
+      std::chrono::steady_clock::now(),
+      []() -> int { throw std::runtime_error("delayed boom"); });
+  ASSERT_EQ(std::future_status::ready, failed.wait_for(kTimeout));
+  EXPECT_THROW(failed.get(), std::runtime_error);
+}
+
+TEST(task_handler, delayed_future_is_broken_when_discarded) {
+  TaskHandler handler;
+  std::future<int> answer = handler.add_callable_after<Future>(
+      std::chrono::hours(1), [] { return kNum; });
+  EXPECT_EQ(1U, handler.pending());
+  handler.stop();
+  EXPECT_THROW(answer.get(), std::future_error);
+}
+
+TEST(task_handler, delayed_future_does_not_run_inline_on_the_worker) {
+  TaskHandler handler;
+  std::future<int> delayed;
+  handler.add_callable<Blocked>([&handler, &delayed] {
+    delayed = handler.add_callable_after<Future>(std::chrono::hours(1),
+                                                 [] { return kNum; });
+    EXPECT_EQ(1U, handler.pending());
+    EXPECT_EQ(std::future_status::timeout,
+              delayed.wait_for(std::chrono::milliseconds(0)));
+  });
+  EXPECT_TRUE(delayed.valid());
+  EXPECT_EQ(1U, handler.pending());
+  handler.stop();
+  EXPECT_THROW(delayed.get(), std::future_error);
 }
 
 TEST(task_handler, max_pending_refuses_work_instead_of_growing) {
@@ -731,6 +831,55 @@ TEST(task_handler, instance_reference_survives_uninit) {
   int num_tmp{};
   handler.add_callable<Blocked>([&] { num_tmp = kNum; });
   EXPECT_EQ(kNum, num_tmp);
+}
+
+TEST(task_handler, submitting_after_uninit_throws) {
+  ReinitGuard reinit_guard;
+  TaskHandler &handler = TaskHandler::instance();
+  TaskHandler::uninit();
+  EXPECT_THROW(handler.add_callable([] {}), TaskHandlerStopped);
+  EXPECT_THROW(handler.add_callable<Blocked>([] {}), TaskHandlerStopped);
+  EXPECT_THROW(handler.add_callable<Future>([] {}), TaskHandlerStopped);
+  EXPECT_THROW(handler.add_callable_after(std::chrono::seconds(1), [] {}),
+               TaskHandlerStopped);
+}
+
+// Regression test: uninit() used to hold the registry mutex while joining, so
+// a task that called instance() waited for a lock that join would only drop
+// after the task finished.
+TEST(task_handler, uninit_does_not_deadlock_when_a_task_calls_instance) {
+  ReinitGuard reinit_guard;
+  TaskHandler::init();
+  TaskHandler &handler0 = TaskHandler::instance(0);
+  TaskHandler &handler1 = TaskHandler::instance(1);
+
+  auto entered = std::make_shared<std::promise<void>>();
+  auto release = std::make_shared<std::promise<void>>();
+  auto done = std::make_shared<std::promise<void>>();
+  auto entered_future = entered->get_future();
+  std::shared_future<void> released = release->get_future().share();
+  auto done_future = done->get_future();
+
+  handler0.add_callable([entered, released, done] {
+    entered->set_value();
+    released.wait();
+    (void)TaskHandler::instance(1);
+    done->set_value();
+  });
+
+  ASSERT_EQ(std::future_status::ready, entered_future.wait_for(kTimeout));
+
+  std::thread shutting_down{[] { TaskHandler::uninit(); }};
+
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (handler0.running() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_FALSE(handler0.running());
+
+  release->set_value();
+  ASSERT_EQ(std::future_status::ready, done_future.wait_for(kTimeout));
+  shutting_down.join();
+  EXPECT_FALSE(handler1.running());
 }
 
 #if defined(__linux__)

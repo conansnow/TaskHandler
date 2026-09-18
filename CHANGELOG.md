@@ -18,6 +18,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `add_callable_after<Future>` and `add_callable_at<Future>` return
+  `std::future<R>` for delayed work. Delayed tasks are never run inline, even
+  from the worker thread. There is still no delayed `Blocked`: that would park
+  the caller until the deadline. Cancelling a delayed Future happens by
+  dropping it (`stop()` or destruction), which leaves the future broken.
+- `TaskId` can be compared with `==` and `!=`. `valid()` still means "this id
+  came from a submission", not "the task is still pending".
 - `TaskHandlerOptions::max_pending` bounds the queue. Once it is reached,
   submitting throws the new `conan::TaskHandlerQueueFull` instead of letting a
   producer that outruns its worker grow the queue without limit. Zero, the
@@ -43,6 +50,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `uninit()` deadlocked if a task on a shared handler called `instance()` (or
+  `init()` / `uninit()`) while shutdown was joining that worker: the registry
+  mutex was held across `stop()`. The pointers are now copied, the lock is
+  dropped, then the workers are joined. A second pass catches a handler created
+  during the first join.
+- `scheduled_tasks_run_in_deadline_order` still slept until "only the first
+  timer is due". On a loaded macOS runner that sleep overshot the next slot,
+  two timers were promoted together, and the mid-test snapshot saw `{1, 2}`.
+  The test now releases the gate immediately and only asserts the final
+  deadline order.
+- `~TaskHandler()` could `std::terminate` if `std::thread::join` threw, because
+  the destructor is implicitly `noexcept`. It now swallows that error. The
+  worker also reports, rather than dying on, an exception from a task
+  destructor, including discarded delayed tasks.
 - GitHub Actions never reached a compile: `lukka/run-vcpkg` still asked for
   the removed `x-gha` binary cache, so every job that needed GoogleTest died
   in configure. The workflow now uses a files cache instead.
@@ -63,6 +84,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `cancel()` is `[[nodiscard]]`. Ignoring the result is ignoring whether the
+  task had already started.
+- The installed package config uses `SameMinorVersion` rather than
+  `SameMajorVersion`, so `find_package(TaskHandler 0.2)` will not accept a
+  future 0.3 that may break API or ABI. That matches the 0.x policy already
+  documented. From 1.0 this can become `SameMajorVersion`.
 - The out-of-line definitions move from `include/conan/task_handler-inl.h` to
   `include/conan/detail/task_handler-inl.h`, matching the namespace they are
   already in. Nothing should have been including them directly.

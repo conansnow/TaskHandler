@@ -89,6 +89,11 @@ Two mutexes, in this order and never the other way round:
    be handling the same `std::thread` object.
 2. `mutex_` guards the queues and the flags above.
 
+The shared-handler registry has a third mutex, used only to publish the
+process-wide objects. It is never held across `start()` or `stop()` of those
+handlers: `join` waits for the current task, and that task is allowed to call
+`instance()`. Holding the registry lock across the join was a deadlock.
+
 `work_cv_` wakes the worker; `idle_cv_` wakes `flush()` and the `start()`
 handshake. The handshake matters: `start()` does not return until the worker has
 published its id, because otherwise a task could already be running while
@@ -104,6 +109,12 @@ the callable and priority arguments stay in one place:
 | `Queued` | `TaskId` | Owned by the task; may outlive the caller |
 | `Blocked` | nothing | Borrowed; the call does not return until it has run |
 | `Future` | `std::future<R>` | Owned, via `std::packaged_task` |
+
+`add_callable_after` and `add_callable_at` take the same policy tag for
+`Queued` and `Future`. Delayed work is never run inline: on the worker that
+would either ignore the deadline or wait for a task that cannot start until
+the current one returns. There is no delayed `Blocked`; that would park the
+caller until the deadline.
 
 `Blocked` is the one case that captures the caller's callable by reference, and
 it is sound only because the function does not return until the task has run.
@@ -190,6 +201,11 @@ destructors, so `uninit()` stops their workers and leaves the objects in place.
 Freeing them would turn a shutdown-ordering mistake in a consumer into a
 use-after-free instead of a `TaskHandlerStopped`.
 
+`uninit()` snapshots the pointers, drops the registry lock, then `stop()`s.
+A second pass catches a handler created by `instance()` while the first pass
+was joining. Without that split, a task that called `instance()` waited for a
+lock that `join` would only drop after the task finished.
+
 Three is arbitrary but fixed, because `instance<Index>()` checks the index at
 compile time. A program that wants a different number owns its handlers, which
 is what constructing one is for.
@@ -236,9 +252,9 @@ a header that has drifted from the shared object next to it shows up.
 
 Semantic versioning, with the usual pre-1.0 caveat: while the major version is
 0, a minor bump may break API or ABI, and the changelog says what broke. The
-installed package config is written `COMPATIBILITY SameMajorVersion`, so
-`find_package(TaskHandler 0.2)` will not silently accept an incompatible
-install.
+installed package config is written `COMPATIBILITY SameMinorVersion`, so
+`find_package(TaskHandler 0.2)` will not silently accept a 0.3 install. From
+1.0 this can become `SameMajorVersion`.
 
 ## Testing
 
