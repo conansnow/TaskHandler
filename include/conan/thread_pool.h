@@ -190,13 +190,13 @@ void ThreadPool::add_callable(C &&callable) {
   // queue, so a Blocked task that was already accepted still runs and fulfils
   // the promise.
   submit(detail::Task{[&callable, &promise] {
-           try {
-             std::invoke(callable);
-             promise.set_value();
-           } catch (...) {
-             promise.set_exception(std::current_exception());
-           }
-         }});
+    try {
+      std::invoke(callable);
+      promise.set_value();
+    } catch (...) {
+      promise.set_exception(std::current_exception());
+    }
+  }});
 
   future.get();
 }
@@ -210,9 +210,8 @@ std::future<detail::TaskResultT<C>> ThreadPool::add_callable(C &&callable) {
     return std::move(work.future);
   }
 
-  submit(detail::Task{[packaged = std::move(work.packaged)]() mutable {
-           packaged();
-         }});
+  submit(detail::Task{
+      [packaged = std::move(work.packaged)]() mutable { packaged(); }});
   return std::move(work.future);
 }
 

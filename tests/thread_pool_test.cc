@@ -251,9 +251,8 @@ TEST(thread_pool, is_worker_thread_is_false_outside_the_pool) {
   ThreadPool pool{pool_options(1)};
   EXPECT_FALSE(pool.is_worker_thread());
   bool on_worker = false;
-  pool.add_callable<Blocked>([&pool, &on_worker] {
-    on_worker = pool.is_worker_thread();
-  });
+  pool.add_callable<Blocked>(
+      [&pool, &on_worker] { on_worker = pool.is_worker_thread(); });
   EXPECT_TRUE(on_worker);
 }
 
@@ -314,8 +313,9 @@ TEST(thread_pool, exception_hook_is_not_used_for_blocked_or_future) {
   options.on_exception = [hook_calls](std::exception_ptr) { ++*hook_calls; };
   ThreadPool pool{std::move(options)};
 
-  EXPECT_THROW(pool.add_callable<Blocked>([] { throw std::runtime_error("a"); }),
-               std::runtime_error);
+  EXPECT_THROW(
+      pool.add_callable<Blocked>([] { throw std::runtime_error("a"); }),
+      std::runtime_error);
   auto future_tmp =
       pool.add_callable<Future>([]() -> int { throw std::runtime_error("b"); });
   EXPECT_THROW(future_tmp.get(), std::runtime_error);
@@ -518,12 +518,29 @@ TEST(thread_pool, worker_threads_are_named_from_the_prefix) {
   options.thread_name_prefix = "tp-named";
   ThreadPool pool{std::move(options)};
 
-  auto name0 = pool.add_callable<Future>([] { return current_thread_name(); });
-  auto name1 = pool.add_callable<Future>([] { return current_thread_name(); });
-  ASSERT_EQ(std::future_status::ready, name0.wait_for(kTimeout));
-  ASSERT_EQ(std::future_status::ready, name1.wait_for(kTimeout));
+  auto name0 = std::make_shared<std::promise<std::string>>();
+  auto name1 = std::make_shared<std::promise<std::string>>();
+  auto release = std::make_shared<std::promise<void>>();
+  auto name0_future = name0->get_future();
+  auto name1_future = name1->get_future();
+  std::shared_future<void> released = release->get_future().share();
 
-  std::vector<std::string> names{name0.get(), name1.get()};
+  // Both workers have to be inside a task at once, otherwise one worker can
+  // run both submissions and the names would not prove there are two threads.
+  pool.add_callable([name0, released] {
+    name0->set_value(current_thread_name());
+    released.wait();
+  });
+  pool.add_callable([name1, released] {
+    name1->set_value(current_thread_name());
+    released.wait();
+  });
+
+  ASSERT_EQ(std::future_status::ready, name0_future.wait_for(kTimeout));
+  ASSERT_EQ(std::future_status::ready, name1_future.wait_for(kTimeout));
+  release->set_value();
+
+  std::vector<std::string> names{name0_future.get(), name1_future.get()};
   std::sort(names.begin(), names.end());
   EXPECT_EQ(std::vector<std::string>({"tp-named-0", "tp-named-1"}), names);
 }

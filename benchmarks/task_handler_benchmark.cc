@@ -147,8 +147,8 @@ Case pool_future_round_trip(std::size_t operations) {
     conan::ThreadPool pool{std::move(options)};
     std::size_t sink = 0;
     for (std::size_t i = 0; i < operations; i++)
-      sink += std::size_t(
-          pool.add_callable<conan::Future>([] { return 1; }).get());
+      sink +=
+          std::size_t(pool.add_callable<conan::Future>([] { return 1; }).get());
     if (sink != operations)
       std::fputs("benchmark lost a pool task\n", stderr);
   });

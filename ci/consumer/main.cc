@@ -22,8 +22,7 @@ int main() {
   pool.add_callable<conan::Blocked>([&pooled] { pooled = 9; });
 
   if (answer != 42 || blocked != 7 || pooled != 9) {
-    std::fprintf(stderr,
-                 "unexpected results: answer=%d blocked=%d pooled=%d\n",
+    std::fprintf(stderr, "unexpected results: answer=%d blocked=%d pooled=%d\n",
                  answer, blocked, pooled);
     return EXIT_FAILURE;
   }

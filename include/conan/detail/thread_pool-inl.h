@@ -87,8 +87,7 @@ TASKHANDLER_INLINE void ThreadPool::start() {
   // Letting the workers publish their own ids closes the window in which a
   // task could already be running while is_worker_thread() still answers
   // false.
-  idle_cv_.wait(lock,
-                [this] { return worker_ids_.size() == thread_count_; });
+  idle_cv_.wait(lock, [this] { return worker_ids_.size() == thread_count_; });
 }
 
 TASKHANDLER_INLINE void ThreadPool::stop() {
@@ -196,8 +195,7 @@ TASKHANDLER_INLINE void ThreadPool::flush() {
 TASKHANDLER_INLINE bool ThreadPool::is_worker_thread() const {
   std::lock_guard<std::mutex> lock{mutex_};
   const std::thread::id id = std::this_thread::get_id();
-  return std::find(worker_ids_.begin(), worker_ids_.end(), id) !=
-         worker_ids_.end();
+  return std::ranges::find(worker_ids_, id) != worker_ids_.end();
 }
 
 TASKHANDLER_INLINE bool ThreadPool::running() const {
