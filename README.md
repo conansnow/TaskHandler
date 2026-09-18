@@ -69,7 +69,7 @@ target_link_libraries(my_app PRIVATE TaskHandler::header_only)   # or ::task_han
 include(FetchContent)
 FetchContent_Declare(TaskHandler
     GIT_REPOSITORY https://github.com/conansnow/TaskHandler.git
-    GIT_TAG v0.2.0
+    GIT_TAG v0.3.0
     )
 FetchContent_MakeAvailable(TaskHandler)
 target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
@@ -88,7 +88,7 @@ cmake --install build
 ```
 
 ```cmake
-find_package(TaskHandler 0.2 REQUIRED)
+find_package(TaskHandler 0.3 REQUIRED)
 target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
 ```
 
@@ -319,8 +319,8 @@ means constructing another handler.
 ## Version
 
 ```cpp
-#if TASKHANDLER_VERSION < 200          // major * 10000 + minor * 100 + patch
-#error TaskHandler 0.2 or newer is required
+#if TASKHANDLER_VERSION < 300          // major * 10000 + minor * 100 + patch
+#error TaskHandler 0.3 or newer is required
 #endif
 
 std::cout << TASKHANDLER_VERSION_STRING << '\n';   // the header's version

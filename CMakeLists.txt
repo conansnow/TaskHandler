@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(TaskHandler
-    VERSION 0.2.0
+    VERSION 0.3.0
     DESCRIPTION "A small single-worker task queue and event handler for C++17"
     HOMEPAGE_URL "https://github.com/conansnow/TaskHandler"
     LANGUAGES CXX
@@ -164,7 +164,7 @@ if(TASKHANDLER_INSTALL)
     write_basic_package_version_file(
         ${CMAKE_CURRENT_BINARY_DIR}/TaskHandlerConfigVersion.cmake
         # 0.x minors may break API or ABI. SameMajorVersion would let
-        # find_package(TaskHandler 0.2) accept a 0.3 install.
+        # find_package(TaskHandler 0.3) accept a 0.4 install.
         COMPATIBILITY SameMinorVersion
         )
     install(FILES

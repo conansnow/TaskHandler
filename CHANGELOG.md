@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0]
+
 ### Breaking
 
 - `TaskHandlerStopped` now derives from the new `conan::TaskHandlerError` rather
@@ -87,9 +89,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `cancel()` is `[[nodiscard]]`. Ignoring the result is ignoring whether the
   task had already started.
 - The installed package config uses `SameMinorVersion` rather than
-  `SameMajorVersion`, so `find_package(TaskHandler 0.2)` will not accept a
-  future 0.3 that may break API or ABI. That matches the 0.x policy already
-  documented. From 1.0 this can become `SameMajorVersion`.
+  `SameMajorVersion`, so `find_package(TaskHandler 0.2)` will not accept this
+  0.3 install. That matches the 0.x policy already documented. From 1.0 this
+  can become `SameMajorVersion`.
 - The out-of-line definitions move from `include/conan/task_handler-inl.h` to
   `include/conan/detail/task_handler-inl.h`, matching the namespace they are
   already in. Nothing should have been including them directly.
@@ -203,6 +205,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Initial implementation: a priority task queue with `Queued`, `Blocked` and
   `Future` submission, three shared handlers, and header-only or compiled use.
 
-[Unreleased]: https://github.com/conansnow/TaskHandler/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/conansnow/TaskHandler/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/conansnow/TaskHandler/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/conansnow/TaskHandler/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/conansnow/TaskHandler/releases/tag/v0.1.0

@@ -19,12 +19,12 @@ set_property(CACHE TASKHANDLER_CONSUMER_MODE PROPERTY STRINGS
     find_package fetchcontent)
 
 if(TASKHANDLER_CONSUMER_MODE STREQUAL "find_package")
-    find_package(TaskHandler 0.2 REQUIRED)
+    find_package(TaskHandler 0.3 REQUIRED)
 elseif(TASKHANDLER_CONSUMER_MODE STREQUAL "fetchcontent")
     include(FetchContent)
     FetchContent_Declare(TaskHandler
         GIT_REPOSITORY https://github.com/conansnow/TaskHandler.git
-        GIT_TAG v0.2.0
+        GIT_TAG v0.3.0
         )
     # CI sets FETCHCONTENT_SOURCE_DIR_TASKHANDLER to the checkout, so the job
     # tests the tree it was run against rather than whatever the tag holds.

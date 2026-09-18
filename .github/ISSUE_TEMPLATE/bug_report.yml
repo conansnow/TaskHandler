@@ -33,7 +33,7 @@ body:
     attributes:
       label: Version
       description: Release or commit, from TASKHANDLER_VERSION_STRING or git.
-      placeholder: 0.2.0
+      placeholder: 0.3.0
     validations:
       required: true
 
