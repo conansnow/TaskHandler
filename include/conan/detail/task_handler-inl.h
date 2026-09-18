@@ -108,21 +108,7 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
     promote_due_timers(std::chrono::steady_clock::now());
 
     if (!ready_.empty()) {
-      auto node = ready_.extract(ready_.begin());
-      detail::Task task = std::move(node.mapped());
-      busy_ = true;
-
-      lock.unlock();
-      try {
-        task();
-      } catch (...) {
-        report_exception(std::current_exception());
-      }
-      destroy_user_code_nothrow([&task] { task = nullptr; });
-      lock.lock();
-
-      busy_ = false;
-      idle_cv_.notify_all();
+      run_one_ready_task(lock);
       continue;
     }
 
@@ -138,6 +124,34 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
       work_cv_.wait(lock);
   }
 
+  discard_undue_timers(lock);
+  // Cleared only after discarded timers are gone: their destructors still
+  // need is_current_thread() to answer true.
+  worker_id_ = std::thread::id{};
+  idle_cv_.notify_all();
+}
+
+TASKHANDLER_INLINE void
+TaskHandler::run_one_ready_task(std::unique_lock<std::mutex> &lock) {
+  auto node = ready_.extract(ready_.begin());
+  detail::Task task = std::move(node.mapped());
+  busy_ = true;
+
+  lock.unlock();
+  try {
+    task();
+  } catch (...) {
+    report_exception(std::current_exception());
+  }
+  destroy_user_code_nothrow([&task] { task = nullptr; });
+  lock.lock();
+
+  busy_ = false;
+  idle_cv_.notify_all();
+}
+
+TASKHANDLER_INLINE void
+TaskHandler::discard_undue_timers(std::unique_lock<std::mutex> &lock) {
   // Delayed tasks that never came due are dropped rather than held for a later
   // start(): stop() promises to discard them, and keeping them would leave
   // pending() counting work that nothing is going to run. They are destroyed
@@ -152,9 +166,6 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
   lock.unlock();
   destroy_user_code_nothrow([&discarded] { discarded.clear(); });
   lock.lock();
-
-  worker_id_ = std::thread::id{};
-  idle_cv_.notify_all();
 }
 
 TASKHANDLER_INLINE void

@@ -43,6 +43,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Task and timer destruction share one internal nothrow helper. No API change.
 - Immediate and delayed `Future` paths share one `packaged_task` helper, and
   the leftover `detail::make_task` wrapper is gone. No API change.
+- The worker loop names its run and timer-discard phases. No API change.
 
 ### Fixed
 

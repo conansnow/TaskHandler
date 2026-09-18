@@ -370,6 +370,8 @@ private:
   void ensure_accepting() const;
   void request_stop();
   void run_worker();
+  void run_one_ready_task(std::unique_lock<std::mutex> &lock);
+  void discard_undue_timers(std::unique_lock<std::mutex> &lock);
   void promote_due_timers(std::chrono::steady_clock::time_point now);
   void report_exception(std::exception_ptr error) const noexcept;
   // User destructors are allowed to throw. They must not run under mutex_,
