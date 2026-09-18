@@ -47,8 +47,9 @@ std::cout << answer.get() << '\n';
 
 ### Header-only
 
-Copy `include/conan/` into your project and include the header. Nothing else
-is needed, though you still have to link a thread library:
+Copy `include/conan/` into your project and include the header. The consumer
+must compile as C++23. Nothing else is needed, though you still have to link a
+thread library:
 
 ```cmake
 find_package(Threads REQUIRED)
@@ -368,7 +369,7 @@ header-only and compiled builds cannot quietly diverge.
 round trips; run it before and after a change to the queue.
 
 The library needs C++23 (GCC 13, Clang 17, MSVC 17.7, or an AppleClang with a
-complete C++23 library) and CMake 4.0. CI also rebuilds everything as C++26, so
+complete C++23 library) and CMake 3.28. CI also rebuilds everything as C++26, so
 a newer consumer is covered too.
 
 ## Guarantees and limits
