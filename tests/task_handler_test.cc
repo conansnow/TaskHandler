@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <future>
 #include <limits>
 #include <memory>
@@ -117,6 +118,39 @@ void clobber_stack() {
 struct ReinitGuard {
   ~ReinitGuard() { TaskHandler::init(); }
 };
+
+// Parks until running() is false or the hang timeout elapses. Used when a
+// stop was requested from inside a task, so the worker has not joined yet.
+void wait_until_not_running(TaskHandler &handler) {
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (handler.running() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
+// Runs `on_destroy` from a task destructor without holding the library mutex.
+// The two regression tests differ only in what they call back into.
+struct Touch {
+  Touch(TaskHandler *owner, std::shared_ptr<std::atomic_bool> done,
+        std::function<void(TaskHandler &)> fn)
+      : handler{owner}, flag{std::move(done)}, on_destroy{std::move(fn)} {}
+  TaskHandler *handler{};
+  std::shared_ptr<std::atomic_bool> flag;
+  std::function<void(TaskHandler &)> on_destroy;
+  ~Touch() {
+    if (handler == nullptr || !flag)
+      return;
+    on_destroy(*handler);
+    *flag = true;
+  }
+};
+
+#if defined(__linux__)
+std::string current_thread_name() {
+  char buffer[32]{};
+  pthread_getname_np(pthread_self(), buffer, sizeof(buffer));
+  return std::string{buffer};
+}
+#endif
 
 } // namespace
 
@@ -444,32 +478,21 @@ TEST(task_handler, cancel_runs_task_destructor_without_holding_the_mutex) {
   auto reentered = std::make_shared<std::atomic_bool>(false);
   Gate gate{handler};
 
-  struct Touch {
-    Touch(TaskHandler *owner, std::shared_ptr<std::atomic_bool> done)
-        : handler{owner}, flag{std::move(done)} {}
-    TaskHandler *handler{};
-    std::shared_ptr<std::atomic_bool> flag;
-    ~Touch() {
-      if (handler == nullptr || !flag)
-        return;
-      (void)handler->pending();
-      *flag = true;
-    }
-  };
-
   const TaskId queued = handler.add_callable(
-      [touch = std::make_shared<Touch>(&handler, reentered)] {
-        (void)touch;
-      });
+      [touch = std::make_shared<Touch>(&handler, reentered,
+                                      [](TaskHandler &owner) {
+                                        (void)owner.pending();
+                                      })] { (void)touch; });
   EXPECT_TRUE(handler.cancel(queued));
   EXPECT_TRUE(reentered->load());
 
   *reentered = false;
   const TaskId delayed = handler.add_callable_after(
       std::chrono::hours(1),
-      [touch = std::make_shared<Touch>(&handler, reentered)] {
-        (void)touch;
-      });
+      [touch = std::make_shared<Touch>(&handler, reentered,
+                                      [](TaskHandler &owner) {
+                                        (void)owner.pending();
+                                      })] { (void)touch; });
   EXPECT_TRUE(handler.cancel(delayed));
   EXPECT_TRUE(reentered->load());
 
@@ -622,23 +645,14 @@ TEST(task_handler, discarded_timer_destructor_can_call_start_during_stop) {
   TaskHandler handler;
   auto returned = std::make_shared<std::atomic_bool>(false);
 
-  struct Touch {
-    Touch(TaskHandler *owner, std::shared_ptr<std::atomic_bool> done)
-        : handler{owner}, flag{std::move(done)} {}
-    TaskHandler *handler{};
-    std::shared_ptr<std::atomic_bool> flag;
-    ~Touch() {
-      if (handler == nullptr || !flag)
-        return;
-      handler->start();
-      handler->stop();
-      *flag = true;
-    }
-  };
-
   handler.add_callable_after(
       std::chrono::hours(1),
-      [touch = std::make_shared<Touch>(&handler, returned)] { (void)touch; });
+      [touch = std::make_shared<Touch>(
+           &handler, returned,
+           [](TaskHandler &owner) {
+             owner.start();
+             owner.stop();
+           })] { (void)touch; });
   handler.stop();
   EXPECT_TRUE(returned->load());
   EXPECT_FALSE(handler.running());
@@ -889,9 +903,7 @@ TEST(task_handler, start_revives_a_handler_stopped_from_inside_a_task) {
 
   // The worker finishes unwinding out of the task on its own, so wait for the
   // stop to take effect rather than assuming it already has.
-  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-  while (handler.running() && std::chrono::steady_clock::now() < deadline)
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  wait_until_not_running(handler);
   ASSERT_FALSE(handler.running());
 
   // start() joins the exiting worker if it has not finished yet, then
@@ -914,9 +926,7 @@ TEST(task_handler, start_from_inside_a_task_does_not_deadlock_against_stop) {
   auto returned_future = returned->get_future();
 
   handler.add_callable([&handler, returned] {
-    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-    while (handler.running() && std::chrono::steady_clock::now() < deadline)
-      std::this_thread::yield();
+    wait_until_not_running(handler);
     handler.start();
     returned->set_value();
   });
@@ -1024,9 +1034,7 @@ TEST(task_handler, uninit_does_not_deadlock_when_a_task_calls_instance) {
 
   std::thread shutting_down{[] { TaskHandler::uninit(); }};
 
-  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-  while (handler0.running() && std::chrono::steady_clock::now() < deadline)
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  wait_until_not_running(handler0);
   ASSERT_FALSE(handler0.running());
 
   release->set_value();
@@ -1041,23 +1049,14 @@ TEST(task_handler, worker_thread_is_named) {
   options.thread_name = "th-named";
   TaskHandler handler{std::move(options)};
 
-  auto name = handler.add_callable<Future>([] {
-    char buffer[32]{};
-    pthread_getname_np(pthread_self(), buffer, sizeof(buffer));
-    return std::string{buffer};
-  });
+  auto name = handler.add_callable<Future>([] { return current_thread_name(); });
   ASSERT_EQ(std::future_status::ready, name.wait_for(kTimeout));
   EXPECT_EQ(std::string{"th-named"}, name.get());
 }
 
 TEST(task_handler, shared_handlers_get_distinct_thread_names) {
   auto name_of = [](TaskHandler &handler) {
-    return handler
-        .add_callable<Future>([] {
-          char buffer[32]{};
-          pthread_getname_np(pthread_self(), buffer, sizeof(buffer));
-          return std::string{buffer};
-        })
+    return handler.add_callable<Future>([] { return current_thread_name(); })
         .get();
   };
   EXPECT_EQ(std::string{"conan-task-0"}, name_of(TaskHandler::instance<0>()));
