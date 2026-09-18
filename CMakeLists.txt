@@ -180,4 +180,55 @@ if(TASKHANDLER_INSTALL)
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TaskHandler
         )
     install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+    # Relocatable .pc files: ${pcfiledir} is the directory of the installed
+    # file, so prefix is the relative walk from ${libdir}/pkgconfig back to
+    # CMAKE_INSTALL_PREFIX. Hard-coding ../.. breaks Debian multiarch
+    # (lib/x86_64-linux-gnu/pkgconfig).
+    get_filename_component(_taskhandler_install_prefix "${CMAKE_INSTALL_PREFIX}" ABSOLUTE)
+    if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+        set(_taskhandler_pkgconfig_dir "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+    else()
+        set(_taskhandler_pkgconfig_dir
+            "${_taskhandler_install_prefix}/${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+    endif()
+    file(RELATIVE_PATH TASKHANDLER_PC_PREFIX_FROM_PKGCONFIG
+        "${_taskhandler_pkgconfig_dir}"
+        "${_taskhandler_install_prefix}")
+    if(TASKHANDLER_PC_PREFIX_FROM_PKGCONFIG STREQUAL "")
+        set(TASKHANDLER_PC_PREFIX_FROM_PKGCONFIG ".")
+    endif()
+    string(REPLACE "\\" "/" TASKHANDLER_PC_PREFIX_FROM_PKGCONFIG
+        "${TASKHANDLER_PC_PREFIX_FROM_PKGCONFIG}")
+
+    # Compiled-library consumers must see TASKHANDLER_COMPILED_LIB or they
+    # compile the inline definitions and then also link the .a/.so.
+    set(TASKHANDLER_PC_CFLAGS " -DTASKHANDLER_COMPILED_LIB")
+    if(BUILD_SHARED_LIBS)
+        string(APPEND TASKHANDLER_PC_CFLAGS " -DTASKHANDLER_SHARED_LIB")
+    endif()
+    set(TASKHANDLER_PC_LIBS "-ltask_handler")
+    set(TASKHANDLER_PC_HEADER_ONLY_CFLAGS "")
+    set(TASKHANDLER_PC_HEADER_ONLY_LIBS "")
+    if(CMAKE_USE_PTHREADS_INIT)
+        # Threads is a public dependency; -pthread belongs in Cflags as well
+        # as Libs because it can define _REENTRANT on the compile line.
+        string(APPEND TASKHANDLER_PC_CFLAGS " -pthread")
+        string(APPEND TASKHANDLER_PC_LIBS " -pthread")
+        set(TASKHANDLER_PC_HEADER_ONLY_CFLAGS " -pthread")
+        set(TASKHANDLER_PC_HEADER_ONLY_LIBS " -pthread")
+    endif()
+
+    configure_file(
+        cmake/taskhandler.pc.in
+        ${CMAKE_CURRENT_BINARY_DIR}/taskhandler.pc
+        @ONLY)
+    configure_file(
+        cmake/taskhandler-header-only.pc.in
+        ${CMAKE_CURRENT_BINARY_DIR}/taskhandler-header-only.pc
+        @ONLY)
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/taskhandler.pc
+        ${CMAKE_CURRENT_BINARY_DIR}/taskhandler-header-only.pc
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 endif()

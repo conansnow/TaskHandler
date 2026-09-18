@@ -18,6 +18,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already named threads; both types now share one helper.
 - Chinese translation of the public contract in [README.zh.md](README.zh.md).
   English remains the default `README.md`.
+- Relocatable `taskhandler.pc` and `taskhandler-header-only.pc` from
+  `cmake --install`. Compiled-library flags include `TASKHANDLER_COMPILED_LIB`
+  so a pkg-config consumer does not compile the inline definitions and then
+  also link the binary.
+- Overlay vcpkg port in `ports/taskhandler` for
+  `vcpkg install taskhandler --overlay-ports=ports`. The root `vcpkg.json`
+  is still only the developer manifest (GoogleTest behind `tests`).
+- Conan 2 recipe (`conanfile.py` and `test_package/`). The package name is
+  `taskhandler`; the C++ namespace remains `conan`. The recipe reuses the
+  installed CMake package config so both exported targets work.
 
 ### Breaking
 

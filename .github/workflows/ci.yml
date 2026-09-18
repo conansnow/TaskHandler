@@ -193,7 +193,8 @@ jobs:
   # Proves that the ways the README tells people to depend on TaskHandler
   # actually work, for both exported targets. A build-tree-only check would not
   # have caught the installed header-only target being exported under the wrong
-  # name.
+  # name. pkg-config, the vcpkg overlay and Conan 2 run on Ubuntu; macOS still
+  # covers find_package and FetchContent.
   consume:
     name: install and consume (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -236,6 +237,54 @@ jobs:
           cmake --build out/consumer-fetchcontent
           ./out/consumer-fetchcontent/consumer_compiled
           ./out/consumer-fetchcontent/consumer_header_only
+
+      - name: Consume via pkg-config
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pcdir=$(find out/install/release -type d -name pkgconfig | head -n 1)
+          if [ -z "$pcdir" ]; then
+            echo "no pkgconfig directory under out/install/release" >&2
+            exit 1
+          fi
+          export PKG_CONFIG_PATH="$pcdir${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          pkg-config --exists --print-errors taskhandler
+          pkg-config --exists --print-errors taskhandler-header-only
+          pkg-config --cflags --libs taskhandler
+          pkg-config --cflags --libs taskhandler-header-only
+          cmake -S ci/consumer -B out/consumer-pkgconfig -G Ninja \
+            -DTASKHANDLER_CONSUMER_MODE=pkgconfig
+          cmake --build out/consumer-pkgconfig
+          libdir=$(pkg-config --variable=libdir taskhandler)
+          export LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          ./out/consumer-pkgconfig/consumer_compiled
+          ./out/consumer-pkgconfig/consumer_header_only
+
+      - name: Consume via vcpkg overlay
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          case "$(uname -m)" in
+            x86_64) TRIPLET=x64-linux ;;
+            aarch64) TRIPLET=arm64-linux ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          "$VCPKG_ROOT/vcpkg" install taskhandler \
+            --overlay-ports="$PWD/ports" \
+            --triplet "$TRIPLET" \
+            --classic \
+            --x-install-root="$PWD/out/vcpkg-installed"
+          cmake -S ci/consumer -B out/consumer-vcpkg -G Ninja \
+            -DCMAKE_PREFIX_PATH="$PWD/out/vcpkg-installed/$TRIPLET"
+          cmake --build out/consumer-vcpkg
+          ./out/consumer-vcpkg/consumer_compiled
+          ./out/consumer-vcpkg/consumer_header_only
+
+      - name: Consume via Conan 2
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python3 -m pip install --user "conan>=2.0.14,<3"
+          export PATH="$HOME/.local/bin:$PATH"
+          conan profile detect --force
+          conan create . --version=0.3.0 -s compiler.cppstd=23
 
   format:
     name: clang-format

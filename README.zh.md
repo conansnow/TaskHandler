@@ -99,6 +99,46 @@ target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
 
 `TaskHandler::task_handler` 会自行向下传播 `TASKHANDLER_COMPILED_LIB`（共享库还会带上 `TASKHANDLER_SHARED_LIB`），不必手写宏。每个二进制选一个 target，不要混用。
 
+C++ 命名空间是 `conan`。CMake 包名是 `TaskHandler`。vcpkg、Conan 和 pkg-config 的名字都是 `taskhandler`。后三者还不在官方注册表里：本仓库的配方装的是当前源码。要进 Conan Center / microsoft/vcpkg，得先打 tag。
+
+### 用 vcpkg（overlay）
+
+```sh
+vcpkg install taskhandler --overlay-ports=path/to/TaskHandler/ports
+```
+
+```cmake
+find_package(TaskHandler CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
+```
+
+overlay port 在 `ports/taskhandler`，编的是本仓库这份树。它不是根目录那个只给开发者拉 GoogleTest 的 `vcpkg.json`。
+
+### 用 Conan 2
+
+```sh
+conan create path/to/TaskHandler --version=0.3.0 -s compiler.cppstd=23
+```
+
+```cmake
+# 用 Conan 生成的 CMakeToolchain 配置，然后：
+find_package(TaskHandler 0.3 REQUIRED)
+target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
+```
+
+配方走的是安装出来的 CMake package config，所以 `TaskHandler::header_only` 也在。`test_package/` 会链两个 target。
+
+### 用 pkg-config
+
+`cmake --install` 之后，把 `PKG_CONFIG_PATH` 指到 `${prefix}/lib/pkgconfig`（Debian multiarch 上可能是 `${prefix}/lib/<triplet>/pkgconfig`）：
+
+```sh
+pkg-config --cflags --libs taskhandler
+pkg-config --cflags --libs taskhandler-header-only
+```
+
+Meson（`dependency('taskhandler')`）和 xmake（`add_requires("pkgconfig::taskhandler")`）也走这条路。CPM.cmake 就是包了一层的 FetchContent，用上面的 FetchContent 片段即可。
+
 ## 提交任务
 
 `add_callable` 的第一个模板参数是策略标签，默认是 `Queued`。

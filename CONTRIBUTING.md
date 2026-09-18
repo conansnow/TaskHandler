@@ -44,8 +44,9 @@ The sanitizer runs are not optional for a change to the queue or to the
 lifecycle. A threading bug that only shows up one run in fifty is the normal
 case here, which is why the TSan job repeats.
 
-A packaging change (`CMakeLists.txt`, install rules, exported targets) should
-also prove the consumer project still builds:
+A packaging change (`CMakeLists.txt`, install rules, exported targets,
+pkg-config, the vcpkg overlay or the Conan recipe) should also prove the
+consumer project still builds:
 
 ```sh
 cmake --preset release && cmake --build --preset release
@@ -53,6 +54,15 @@ cmake --install out/build/release
 cmake -S ci/consumer -B out/consumer-find-package -G Ninja \
     -DCMAKE_PREFIX_PATH="$PWD/out/install/release"
 cmake --build out/consumer-find-package
+
+export PKG_CONFIG_PATH="$PWD/out/install/release/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+cmake -S ci/consumer -B out/consumer-pkgconfig -G Ninja \
+    -DTASKHANDLER_CONSUMER_MODE=pkgconfig
+cmake --build out/consumer-pkgconfig
+
+"$VCPKG_ROOT/vcpkg" install taskhandler \
+    --overlay-ports="$PWD/ports" --classic
+conan create . --version=0.3.0 -s compiler.cppstd=23
 ```
 
 `clang-format` and `clang-tidy` are pinned to major version 23 because their
@@ -98,9 +108,11 @@ between them they cover layout and naming. Beyond that:
 ## Versions
 
 The version appears in `project()` in `CMakeLists.txt`, in
-`TASKHANDLER_VERSION_*` in the public header, and in `vcpkg.json`. Configuring
+`TASKHANDLER_VERSION_*` in the public header, in `vcpkg.json`, in
+`ports/taskhandler/vcpkg.json`, and in `conanfile.py`. Configuring
 the project checks the first two against each other, so a bump that misses one
-fails the build rather than shipping.
+fails the build rather than shipping. Keep the overlay port and the Conan
+recipe on the same version by hand.
 
 Semantic versioning, with the usual pre-1.0 caveat: while the major version is
 0, a minor bump may break API or ABI. Do not bump the version in a feature pull

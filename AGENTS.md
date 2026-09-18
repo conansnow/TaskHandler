@@ -37,8 +37,12 @@ Pick one CMake target per binary and do not mix them.
 - `examples/basic.cc`, `examples/thread_pool.cc` -- runnable tours.
 - `benchmarks/` -- submission, scheduling and round-trip timings. No
   extra framework.
-- `ci/consumer/` -- downstream smoke test for `find_package` and
-  FetchContent.
+- `ci/consumer/` -- downstream smoke test for `find_package`,
+  FetchContent and pkg-config.
+- `ports/taskhandler/` -- vcpkg overlay port for the current tree.
+  Not a microsoft/vcpkg registry port.
+- `conanfile.py`, `test_package/` -- Conan 2 recipe. Package name
+  `taskhandler`; C++ namespace remains `conan`.
 - `CMakePresets.json` -- `debug`, `release`, `static`, `asan`, `tsan`.
 
 Do not include `detail/*-inl.h` from consumer code. The public headers
@@ -81,7 +85,8 @@ queue change; run it before and after, on the same machine. CI's benchmark
 step is a smoke run, not a measurement.
 
 A packaging change (`CMakeLists.txt`, install rules, exported
-targets) should also prove the consumer project still builds:
+targets, pkg-config, the vcpkg overlay or the Conan recipe) should
+also prove the consumer project still builds:
 
 ```sh
 cmake --preset release && cmake --build --preset release
@@ -89,6 +94,10 @@ cmake --install out/build/release
 cmake -S ci/consumer -B out/consumer-find-package -G Ninja \
     -DCMAKE_PREFIX_PATH="$PWD/out/install/release"
 cmake --build out/consumer-find-package
+export PKG_CONFIG_PATH="$PWD/out/install/release/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+cmake -S ci/consumer -B out/consumer-pkgconfig -G Ninja \
+    -DTASKHANDLER_CONSUMER_MODE=pkgconfig
+cmake --build out/consumer-pkgconfig
 ```
 
 ## Invariants
@@ -191,9 +200,10 @@ you can and on repetition where you cannot.
 
 Do not bump the version in a feature pull request. The version
 appears in `project()` in `CMakeLists.txt`, in
-`TASKHANDLER_VERSION_*` in the public header, and in `vcpkg.json`.
-Configuring checks the first two against each other. Entries
-accumulate under Unreleased; a release bumps all three once.
+`TASKHANDLER_VERSION_*` in the public header, in `vcpkg.json`, in
+`ports/taskhandler/vcpkg.json`, and in `conanfile.py`. Configuring
+checks the first two against each other. Entries accumulate under
+Unreleased; a release bumps all of them once.
 
 While the major version is 0, a minor bump may break API or ABI.
 

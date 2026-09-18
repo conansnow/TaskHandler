@@ -112,6 +112,55 @@ Two targets are exported:
 `TASKHANDLER_SHARED_LIB` for shared builds) on its own, so there is nothing to
 define by hand. Pick one target per binary and do not mix them.
 
+The C++ namespace is `conan`. The CMake package name is `TaskHandler`. The
+vcpkg, Conan and pkg-config names are all `taskhandler`. Those last three are
+not in the official registries yet: the recipes in this tree install the
+current sources. A Conan Center / microsoft/vcpkg submission needs a tagged
+release.
+
+### With vcpkg (overlay)
+
+```sh
+vcpkg install taskhandler --overlay-ports=path/to/TaskHandler/ports
+```
+
+```cmake
+find_package(TaskHandler CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
+```
+
+The overlay port lives in `ports/taskhandler` and builds this tree. It is not
+the project's own `vcpkg.json`, which only pulls GoogleTest for developers.
+
+### With Conan 2
+
+```sh
+conan create path/to/TaskHandler --version=0.3.0 -s compiler.cppstd=23
+```
+
+```cmake
+# Configure with the CMakeToolchain Conan generated, then:
+find_package(TaskHandler 0.3 REQUIRED)
+target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
+```
+
+The recipe uses the installed CMake package config, so `TaskHandler::header_only`
+is there too. `test_package/` links both targets.
+
+### With pkg-config
+
+After `cmake --install`, point `PKG_CONFIG_PATH` at `${prefix}/lib/pkgconfig`
+(or `${prefix}/lib/<triplet>/pkgconfig` on Debian multiarch):
+
+```sh
+pkg-config --cflags --libs taskhandler
+pkg-config --cflags --libs taskhandler-header-only
+```
+
+That is also the Meson (`dependency('taskhandler')`) and xmake
+(`add_requires("pkgconfig::taskhandler")`) path. CPM.cmake is FetchContent
+with a wrapper; use the FetchContent snippet above.
+
 ## Submitting work
 
 `add_callable` takes a policy tag as its first template argument. The default
