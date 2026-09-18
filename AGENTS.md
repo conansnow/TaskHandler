@@ -2,7 +2,8 @@
 
 This file is for coding agents. Humans should start at
 [CONTRIBUTING.md](CONTRIBUTING.md). The public contract is
-[README.md](README.md); why the internals look this way is
+[README.md](README.md) (Chinese; English in
+[README.en.md](README.en.md)); why the internals look this way is
 [docs/design.md](docs/design.md).
 
 ## What this is
@@ -184,8 +185,8 @@ you can and on repetition where you cannot.
 - A changelog entry under `## [Unreleased]` in
   [CHANGELOG.md](CHANGELOG.md), in the `Added`, `Changed`, `Fixed`
   or `Breaking` group. Write it for someone upgrading.
-- Documentation, when the change is visible from outside. The README
-  is the reference.
+- Documentation, when the change is visible from outside. `README.md`
+  (Chinese) is the default reference; keep `README.en.md` in sync.
 - A benchmark run, when the change touches the queue.
 
 Do not bump the version in a feature pull request. The version
