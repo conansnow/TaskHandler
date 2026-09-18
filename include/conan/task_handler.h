@@ -152,7 +152,7 @@ class MoveOnlyTask {
 
 public:
   MoveOnlyTask() = default;
-  MoveOnlyTask(std::nullptr_t) noexcept = default;
+  MoveOnlyTask(std::nullptr_t) noexcept {}
   MoveOnlyTask(const MoveOnlyTask &) = delete;
   MoveOnlyTask &operator=(const MoveOnlyTask &) = delete;
   MoveOnlyTask(MoveOnlyTask &&) noexcept = default;
