@@ -40,6 +40,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Call sites that already passed a duration do not change.
 - Shared-library exception types use `TASKHANDLER_API` on Windows so a
   `TaskHandlerStopped` thrown inside the DLL can be caught by type outside it.
+- Task and timer destruction share one internal nothrow helper. No API change.
 
 ### Fixed
 

@@ -13,9 +13,6 @@
 #include <array>
 #include <cstdlib>
 #include <format>
-#include <map>
-#include <string>
-#include <utility>
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <pthread.h>
@@ -121,11 +118,7 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
       } catch (...) {
         report_exception(std::current_exception());
       }
-      try {
-        task = nullptr;
-      } catch (...) {
-        report_exception(std::current_exception());
-      }
+      destroy_user_code_nothrow([&task] { task = nullptr; });
       lock.lock();
 
       busy_ = false;
@@ -157,11 +150,7 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
   discarded.swap(timed_);
 
   lock.unlock();
-  try {
-    discarded.clear();
-  } catch (...) {
-    report_exception(std::current_exception());
-  }
+  destroy_user_code_nothrow([&discarded] { discarded.clear(); });
   lock.lock();
 
   worker_id_ = std::thread::id{};
@@ -271,11 +260,7 @@ TASKHANDLER_INLINE bool TaskHandler::cancel(const TaskId &id) {
   if (cancelled_timer)
     work_cv_.notify_one();
 
-  try {
-    discarded = nullptr;
-  } catch (...) {
-    report_exception(std::current_exception());
-  }
+  destroy_user_code_nothrow([&discarded] { discarded = nullptr; });
   return cancelled;
 }
 
@@ -304,6 +289,15 @@ TASKHANDLER_INLINE bool TaskHandler::is_current_thread() const {
 TASKHANDLER_INLINE bool TaskHandler::running() const {
   std::lock_guard<std::mutex> lock{mutex_};
   return !stop_requested_ && worker_id_ != std::thread::id{};
+}
+
+TASKHANDLER_INLINE void
+TaskHandler::destroy_user_code_nothrow(auto &&destroy) const noexcept {
+  try {
+    std::invoke(std::forward<decltype(destroy)>(destroy));
+  } catch (...) {
+    report_exception(std::current_exception());
+  }
 }
 
 TASKHANDLER_INLINE void

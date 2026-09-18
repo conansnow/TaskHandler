@@ -362,6 +362,10 @@ private:
   void run_worker();
   void promote_due_timers(std::chrono::steady_clock::time_point now);
   void report_exception(std::exception_ptr error) const noexcept;
+  // User destructors are allowed to throw. They must not run under mutex_,
+  // and they must not take the worker down; the hook is the same one a
+  // throwing task body uses.
+  void destroy_user_code_nothrow(auto &&destroy) const noexcept;
   void apply_thread_name() const noexcept;
 
   static constexpr std::size_t kInstanceCount{3};
