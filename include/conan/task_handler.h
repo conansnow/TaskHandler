@@ -152,7 +152,8 @@ class MoveOnlyTask {
 
 public:
   MoveOnlyTask() = default;
-  MoveOnlyTask(std::nullptr_t) noexcept {}
+  ~MoveOnlyTask() = default;
+  explicit MoveOnlyTask(std::nullptr_t) noexcept {}
   MoveOnlyTask(const MoveOnlyTask &) = delete;
   MoveOnlyTask &operator=(const MoveOnlyTask &) = delete;
   MoveOnlyTask(MoveOnlyTask &&) noexcept = default;
@@ -160,7 +161,7 @@ public:
 
   template <typename F>
     requires(!std::same_as<std::decay_t<F>, MoveOnlyTask>)
-  MoveOnlyTask(F &&callable)
+  explicit MoveOnlyTask(F &&callable)
       : impl_(std::make_unique<Model<std::decay_t<F>>>(
             std::forward<F>(callable))) {}
 
