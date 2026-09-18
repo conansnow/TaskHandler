@@ -193,7 +193,7 @@ issue. See [SECURITY.md](SECURITY.md).
 There is no application to launch and no browser flow to click
 through. Verify with the CMake presets and `ctest`.
 
-The environment needs CMake 4.0 or newer, Ninja, a C++23 compiler,
+The environment needs CMake 3.28 or newer, Ninja, a C++23 compiler,
 and `VCPKG_ROOT` pointing at a vcpkg checkout. Every preset sets
 `VCPKG_MANIFEST_FEATURES=tests`. clang-format and clang-tidy, when
 used, must be major version 23.

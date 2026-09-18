@@ -8,11 +8,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
-- The library now requires C++23 and CMake 4.0. Rebuild consumers with a
+- The library now requires C++23 and CMake 3.28. Rebuild consumers with a
   toolchain that can do both; GCC 13, Clang 17, MSVC 17.7 and AppleClang with a
   complete C++23 library are the floor CI actually runs. `CMAKE_CXX_STANDARD`
   still defaults to 23 and is still overridable, so CI rebuilds as C++26 to
-  catch anything a newer consumer would hit.
+  catch anything a newer consumer would hit. CMake 3.28 is the floor because
+  that is when `CMAKE_CXX_SCAN_FOR_MODULES` exists; 4.0 is not required.
 - Submission overloads are constrained with concepts (`QueuedPolicy`,
   `BlockedPolicy`, `FuturePolicy`, `TaskCallable`) rather than
   `std::enable_if`. Call sites that already passed a policy tag and an
@@ -21,6 +22,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `std::unique_ptr<detail::Task>`. That is an ABI break for the compiled
   library; rebuild against the matching header. `TaskHandlerOptions::on_exception`
   is still `std::function`, so options stay copyable.
+- The version macros remain 0.3.0 until this work is tagged. The tag that
+  ships these breaks must be 0.4.0: `SameMinorVersion` would otherwise let a
+  0.3 consumer accept an ABI-incompatible install.
 
 ### Changed
 
@@ -30,10 +34,28 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   feature. The library itself still has no dependencies.
 - CMake turns off C++ module scanning (`CMAKE_CXX_SCAN_FOR_MODULES`). The
   library is not modular, and a missing `clang-scan-deps` otherwise breaks
-  `find_package(Threads)` under Clang and CMake 4.
+  `find_package(Threads)` under Clang and CMake 3.28 or newer.
 - `add_callable_after` takes any `std::chrono::duration` through the
   `detail::ChronoDuration` concept rather than a bare `Rep`/`Period` pair.
   Call sites that already passed a duration do not change.
+- Shared-library exception types use `TASKHANDLER_API` on Windows so a
+  `TaskHandlerStopped` thrown inside the DLL can be caught by type outside it.
+
+### Fixed
+
+- `cancel()` destroyed the cancelled callable while still holding `mutex_`. A
+  destructor that called back into the handler deadlocked. The node is now
+  extracted under the lock and destroyed after releasing it.
+- Discarding undue timers on `stop()` cleared `worker_id_` before running
+  those destructors, so `is_current_thread()` was already false and a
+  destructor that called `start()` or `stop()` deadlocked against the joining
+  `stop()`. The worker id stays set until the discarded tasks are gone.
+- The shared-handler registry is no longer destroyed at process exit, so a
+  static destructor that calls `instance()` cannot use a dead mutex. Workers
+  are still joined via `atexit`.
+- Promoting a due timer into `ready_` could drop the callable if the insert
+  threw after the move. The mapped task is assigned only after `try_emplace`
+  has allocated the node.
 
 ## [0.3.0]
 

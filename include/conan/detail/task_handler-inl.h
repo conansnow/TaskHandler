@@ -11,6 +11,7 @@
 #endif
 
 #include <array>
+#include <cstdlib>
 #include <format>
 #include <map>
 #include <string>
@@ -148,29 +149,44 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
   // start(): stop() promises to discard them, and keeping them would leave
   // pending() counting work that nothing is going to run. They are destroyed
   // below with the lock released, because a task's destructor is user code and
-  // may well touch this handler.
+  // may well touch this handler. worker_id_ stays set until that is done so
+  // is_current_thread() is still true: a destructor that calls start() or
+  // stop() must not try to take lifecycle_mutex_ against a join already in
+  // progress.
   std::map<detail::TimerKey, detail::TimerEntry> discarded;
   discarded.swap(timed_);
 
-  worker_id_ = std::thread::id{};
-  idle_cv_.notify_all();
   lock.unlock();
   try {
     discarded.clear();
   } catch (...) {
     report_exception(std::current_exception());
   }
+  lock.lock();
+
+  worker_id_ = std::thread::id{};
+  idle_cv_.notify_all();
 }
 
 TASKHANDLER_INLINE void
 TaskHandler::promote_due_timers(std::chrono::steady_clock::time_point now) {
   while (!timed_.empty() && timed_.begin()->first.deadline <= now) {
     auto node = timed_.extract(timed_.begin());
-    // Keeping the original sequence number means a task stays cancellable
-    // across the move from the timer queue to the runnable queue.
-    ready_.emplace(detail::ReadyKey{.priority = node.mapped().priority,
-                                    .sequence = node.key().sequence},
-                   std::move(node.mapped().task));
+    try {
+      // Keeping the original sequence number means a task stays cancellable
+      // across the move. try_emplace default-constructs an empty Task first
+      // so a throwing allocation cannot consume the callable; moving
+      // move_only_function is noexcept.
+      auto it = ready_
+                    .try_emplace(detail::ReadyKey{
+                        .priority = node.mapped().priority,
+                        .sequence = node.key().sequence})
+                    .first;
+      it->second = std::move(node.mapped().task);
+    } catch (...) {
+      timed_.insert(std::move(node));
+      throw;
+    }
   }
 }
 
@@ -225,14 +241,39 @@ TASKHANDLER_INLINE bool TaskHandler::cancel(const TaskId &id) {
   if (!id.valid())
     return false;
 
-  std::lock_guard<std::mutex> lock{mutex_};
-  if (id.kind_ == TaskId::Kind::timed &&
-      timed_.erase(detail::TimerKey{.deadline = id.deadline_,
-                                    .sequence = id.sequence_}) != 0)
-    return true;
+  detail::Task discarded;
+  bool cancelled = false;
+  bool cancelled_timer = false;
+  {
+    std::lock_guard<std::mutex> lock{mutex_};
+    if (id.kind_ == TaskId::Kind::timed) {
+      if (auto node = timed_.extract(detail::TimerKey{
+              .deadline = id.deadline_, .sequence = id.sequence_})) {
+        discarded = std::move(node.mapped().task);
+        cancelled = true;
+        cancelled_timer = true;
+      }
+    }
+    if (!cancelled) {
+      if (auto node = ready_.extract(detail::ReadyKey{
+              .priority = id.priority_, .sequence = id.sequence_})) {
+        discarded = std::move(node.mapped());
+        cancelled = true;
+      }
+    }
+  }
 
-  return ready_.erase(detail::ReadyKey{.priority = id.priority_,
-                                       .sequence = id.sequence_}) != 0;
+  // Cancelling the timer the worker is sleeping on would otherwise leave it
+  // parked until that (now stale) deadline.
+  if (cancelled_timer)
+    work_cv_.notify_one();
+
+  try {
+    discarded = nullptr;
+  } catch (...) {
+    report_exception(std::current_exception());
+  }
+  return cancelled;
 }
 
 TASKHANDLER_INLINE std::size_t TaskHandler::pending() const {
@@ -344,8 +385,8 @@ private:
       options.thread_name = std::format("conan-task-{}", index);
       // Deliberately never freed. A reference handed out by instance() has to
       // stay valid for the rest of the program, including while other static
-      // objects are running their destructors, so the handlers outlive this
-      // registry and only their worker threads are shut down.
+      // objects are running their destructors. The registry itself is leaked
+      // for the same reason; only the worker threads are shut down.
       handlers_[index] = new TaskHandler{std::move(options)};
     }
     return handlers_[index];
@@ -356,8 +397,17 @@ private:
 };
 
 TASKHANDLER_INLINE InstanceRegistry &registry() {
-  static InstanceRegistry instance;
-  return instance;
+  // Never destroyed. A static destructor that calls instance() after this
+  // object's usual lifetime would otherwise touch a dead mutex. Handlers are
+  // leaked for the same reason. atexit still joins the workers so process
+  // exit matches uninit().
+  static InstanceRegistry *instance = new InstanceRegistry;
+  static const int atexit_stop = [] {
+    std::atexit([] { instance->stop_all(); });
+    return 0;
+  }();
+  static_cast<void>(atexit_stop);
+  return *instance;
 }
 
 } // namespace detail

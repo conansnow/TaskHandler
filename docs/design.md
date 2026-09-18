@@ -42,7 +42,7 @@ add_callable()                          worker thread
  ensure_accepting()  --- refuse --->  TaskHandlerStopped
       |                               TaskHandlerQueueFull
       v
-   timed_  --- deadline reached --->  ready_  --->  task->run()
+   timed_  --- deadline reached --->  ready_  --->  task()
  (deadline,                        (priority,
   sequence)                         sequence)
 ```
@@ -79,7 +79,9 @@ The invariants a change has to preserve:
   `Blocked` caller is waiting on a promise that only the task can fulfil.
 - User code -- a task body, a task destructor, the exception hook -- never runs
   with `mutex_` held. It can call back into the handler, and one that does must
-  not deadlock.
+  not deadlock. `cancel()` extracts the node under the lock and destroys the
+  callable after releasing it. The worker keeps `worker_id_` set while
+  discarded timers are destroyed, so `is_current_thread()` stays true.
 
 ## Locking
 
@@ -153,7 +155,10 @@ promise that nothing will ever fulfil.
 
 Delayed tasks that are not yet due are the exception: they are discarded, since
 waiting out an hour-long deadline is not a shutdown. The worker drops them as it
-leaves, with the lock released, because a task's destructor is user code.
+leaves, with the lock released, because a task's destructor is user code. It
+keeps `worker_id_` set until those destructors finish, so a callback into
+`start()` or `stop()` still sees itself as the worker and does not take
+`lifecycle_mutex_` against the `join` already in progress.
 
 The awkward cases, all of which have regression tests:
 
@@ -201,7 +206,10 @@ limit is there to slow down.
 are deliberately never freed: a reference handed out has to stay valid for the
 rest of the program, including while other static objects are running their
 destructors, so `uninit()` stops their workers and leaves the objects in place.
-Freeing them would turn a shutdown-ordering mistake in a consumer into a
+The registry that holds the pointers is leaked too; destroying it would make a
+later `instance()` during static destruction a use-after-free. `atexit` still
+joins the workers so process exit matches `uninit()`. Freeing the handlers
+themselves would turn a shutdown-ordering mistake in a consumer into a
 use-after-free instead of a `TaskHandlerStopped`.
 
 `uninit()` snapshots the pointers, drops the registry lock, then `stop()`s.

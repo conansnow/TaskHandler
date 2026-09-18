@@ -56,9 +56,10 @@
 // Types whose typeinfo and vtable are shared between the library and its
 // consumers must keep default visibility even when the library is built with
 // -fvisibility=hidden, otherwise an exception thrown inside the shared object
-// cannot be caught by type on the other side of the boundary.
+// cannot be caught by type on the other side of the boundary. On Windows the
+// same requirement is a dllimport/dllexport on the throwable types.
 #if defined(_WIN32)
-#define TASKHANDLER_VISIBLE
+#define TASKHANDLER_VISIBLE TASKHANDLER_API
 #else
 #define TASKHANDLER_VISIBLE __attribute__((visibility("default")))
 #endif
@@ -401,9 +402,11 @@ void TaskHandler::add_callable(C &&callable, int priority) {
   std::future<void> future = promise.get_future();
 
   // Capturing by reference is safe here, and only here, because this function
-  // does not return until the task has run to completion. If the handler is
-  // stopped before the task runs, the promise is destroyed and get() below
-  // throws std::future_error rather than blocking forever.
+  // does not return until the task has run to completion. stop() drains
+  // ready_, so a Blocked task that was already accepted still runs and
+  // fulfils the promise. Destroying that wrapper without running it would
+  // leave get() blocked forever: the promise lives on this stack until get()
+  // returns, so it would not store broken_promise.
   submit(detail::make_task([&callable, &promise] {
            try {
              std::invoke(callable);
