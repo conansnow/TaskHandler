@@ -1,7 +1,8 @@
 # Design notes
 
 Why TaskHandler is built the way it is. The README documents what the library
-does; this is for anyone changing how it does it.
+does; [README.zh.md](../README.zh.md) is the Chinese translation. This is for
+anyone changing how it does it.
 
 - [Scope](#scope)
 - [Shape](#shape)
@@ -12,6 +13,7 @@ does; this is for anyone changing how it does it.
 - [Shutdown](#shutdown)
 - [Backpressure](#backpressure)
 - [Shared handlers](#shared-handlers)
+- [ThreadPool](#threadpool)
 - [Two consumption modes](#two-consumption-modes)
 - [Versioning and ABI](#versioning-and-abi)
 - [Testing](#testing)
@@ -26,8 +28,9 @@ for an event handler, because state owned by a handler needs no locking when
 only its worker touches it.
 
 It is deliberately not a thread pool, not a work-stealing scheduler, and not a
-coroutine runtime. A pool would break the property the library exists for. Those
-belong in a different type, and a program that needs both can have both.
+coroutine runtime. A pool would break the property the library exists for.
+Concurrent work belongs on `ThreadPool`, a sibling type in this library, and a
+program that needs both can have both.
 
 The library also has no dependencies beyond the standard library and a thread
 library. That is a feature for the sort of project that vendors a header, and it
@@ -42,7 +45,7 @@ add_callable()                          worker thread
  ensure_accepting()  --- refuse --->  TaskHandlerStopped
       |                               TaskHandlerQueueFull
       v
-   timed_  --- deadline reached --->  ready_  --->  task->run()
+   timed_  --- deadline reached --->  ready_  --->  task()
  (deadline,                        (priority,
   sequence)                         sequence)
 ```
@@ -74,12 +77,16 @@ The invariants a change has to preserve:
 - A `sequence_` value is never reused, which is what makes a `TaskId` safe to
   cancel with: it can never name a later task.
 - Promotion from `timed_` to `ready_` keeps the original sequence number, so a
-  delayed task stays cancellable across the move.
+  delayed task stays cancellable across the move. The caller's `TaskId` still
+  says `Kind::timed`; `cancel()` therefore looks in `timed_` first and then in
+  `ready_`.
 - Nothing accepted into `ready_` is dropped. `stop()` drains it, because a
   `Blocked` caller is waiting on a promise that only the task can fulfil.
 - User code -- a task body, a task destructor, the exception hook -- never runs
   with `mutex_` held. It can call back into the handler, and one that does must
-  not deadlock.
+  not deadlock. `cancel()` extracts the node under the lock and destroys the
+  callable after releasing it. The worker keeps `worker_id_` set while
+  discarded timers are destroyed, so `is_current_thread()` stays true.
 
 ## Locking
 
@@ -111,19 +118,25 @@ the callable and priority arguments stay in one place:
 | `Future` | `std::future<R>` | Owned, via `std::packaged_task` |
 
 `add_callable_after` and `add_callable_at` take the same policy tag for
-`Queued` and `Future`. Delayed work is never run inline: on the worker that
-would either ignore the deadline or wait for a task that cannot start until
-the current one returns. There is no delayed `Blocked`; that would park the
-caller until the deadline.
+`Queued` and `Future`. The delay is any `std::chrono::duration`, constrained
+by `detail::ChronoDuration`; the deadline is still a `steady_clock` time
+point. Delayed work is never run inline: on the worker that would either
+ignore the deadline or wait for a task that cannot start until the current
+one returns. There is no delayed `Blocked`; that would park the caller until
+the deadline.
 
 `Blocked` is the one case that captures the caller's callable by reference, and
 it is sound only because the function does not return until the task has run.
 `Future` must own it: the future outlives the call.
 
-Tasks are stored as `std::unique_ptr<detail::Task>`, a small move-only
-type-erased base, rather than `std::function`. `std::function` requires its
-target to be copy-constructible, which would reject a lambda that captured a
-`std::unique_ptr` -- exactly the shape a queued task usually has.
+Tasks are stored as `std::move_only_function<void()>`, rather than
+`std::function`. `std::function` requires its target to be copy-constructible,
+which would reject a lambda that captured a `std::unique_ptr` -- exactly the
+shape a queued task usually has. The exception hook on `TaskHandlerOptions`
+stays `std::function` so the options struct remains copyable. Apple's libc++
+still does not ship P0288R9, so those toolchains get a small move-only
+type-erased wrapper with the same call sites (including `= nullptr` to destroy
+the callable after it has run).
 
 `Blocked` and `Future` check `is_current_thread()` and run the task inline when
 they are already on the worker. Queueing there would wait on a task that cannot
@@ -150,7 +163,10 @@ promise that nothing will ever fulfil.
 
 Delayed tasks that are not yet due are the exception: they are discarded, since
 waiting out an hour-long deadline is not a shutdown. The worker drops them as it
-leaves, with the lock released, because a task's destructor is user code.
+leaves, with the lock released, because a task's destructor is user code. It
+keeps `worker_id_` set until those destructors finish, so a callback into
+`start()` or `stop()` still sees itself as the worker and does not take
+`lifecycle_mutex_` against the `join` already in progress.
 
 The awkward cases, all of which have regression tests:
 
@@ -198,7 +214,10 @@ limit is there to slow down.
 are deliberately never freed: a reference handed out has to stay valid for the
 rest of the program, including while other static objects are running their
 destructors, so `uninit()` stops their workers and leaves the objects in place.
-Freeing them would turn a shutdown-ordering mistake in a consumer into a
+The registry that holds the pointers is leaked too; destroying it would make a
+later `instance()` during static destruction a use-after-free. `atexit` still
+joins the workers so process exit matches `uninit()`. Freeing the handlers
+themselves would turn a shutdown-ordering mistake in a consumer into a
 use-after-free instead of a `TaskHandlerStopped`.
 
 `uninit()` snapshots the pointers, drops the registry lock, then `stop()`s.
@@ -209,6 +228,57 @@ lock that `join` would only drop after the task finished.
 Three is arbitrary but fixed, because `instance<Index>()` checks the index at
 compile time. A program that wants a different number owns its handlers, which
 is what constructing one is for.
+
+## ThreadPool
+
+`ThreadPool` is the other type the [Scope](#scope) section points at. It is not
+a mode of `TaskHandler`. N workers share one FIFO queue, so tasks on a pool
+*may* run at the same time, and shared state needs locking. The reason it lives
+in this library is so a program can bounce CPU work off a handler and back
+without pulling in a second dependency.
+
+What it copies from the handler, because the same constraints apply:
+
+- User code never runs with `mutex_` held.
+- `stop()` and destruction drain accepted work, so a `Blocked` caller is not
+  left waiting on a promise nobody fulfils.
+- `Blocked` borrows the callable; `Queued` and `Future` own it.
+- Recursive `Blocked`/`Future` from a worker run inline.
+- `max_pending` throws rather than blocking submit.
+- Lock order is `lifecycle_mutex_` then `mutex_`.
+
+What it does not copy, on purpose:
+
+- **Timers.** One thread should sleep on deadlines. That is the handler.
+- **Priority and `cancel(TaskId)`.** Those need the serial map. A pool is for
+  concurrent throughput; `Queued` returns `void`.
+- **`instance()`.** A process-wide pool is hidden global contention.
+- **Work stealing.** A mutex and a deque are enough for a small pool, and a
+  steal loop is a different product.
+
+`start()` holds `mutex_` across spawn so a concurrent submit cannot accept
+work into a pool that then fails to start. If reserve, thread creation or the
+wait for worker ids throws, the pool is put back to stopped, any threads that
+did start are joined, and the exception propagates. Leaving `stop_requested_`
+false with an empty `threads_` would accept work that nobody runs.
+
+`flush()` waits until the queue is empty and no worker is busy, or until
+stop has been requested and every worker has exited. `worker_ids_.empty()`
+alone is also true in the window after `start()` clears the ids and before
+the first worker publishes, which would let `flush()` return while the queue
+still had work.
+
+`on_exception` may run on several workers at once. The library does not
+serialize the hook: that would stall workers, and a hook that called back
+into the pool could deadlock. Callers that share mutable state in the hook
+have to synchronize it themselves.
+
+The remaining pool hazard is the usual one: if every worker is `Blocked` on
+more pool work, nothing runs. Inline-on-worker only helps the recursive and
+1-thread cases.
+
+Worker threads are named through the same helper as the handler, including
+Windows `SetThreadDescription`.
 
 ## Two consumption modes
 
@@ -304,3 +374,9 @@ Run it before and after a change to the queue.
   path that already takes the lock to insert.
 - **A pimpl'd `TaskHandler`.** See [Two consumption
   modes](#two-consumption-modes).
+- **Putting a pool inside `TaskHandler`.** The serial guarantee is the
+  product. Concurrent work is `ThreadPool`.
+- **Work stealing, a growing pool, or timers on `ThreadPool`.** Stealing and
+  growth are a different scheduler; delayed work belongs on a handler.
+- **A process-wide `ThreadPool::instance()`.** Hidden global contention. A
+  program that wants a shared pool constructs one and holds it.

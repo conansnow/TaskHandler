@@ -6,8 +6,9 @@ body:
     attributes:
       value: |
         TaskHandler is a serial executor: one thread per handler, one task at a
-        time. A request that needs a thread pool, work stealing or preemption
-        belongs in a different type rather than this one -- see docs/design.md.
+        time. Concurrent work belongs on ThreadPool, a sibling type -- see
+        docs/design.md. A request that needs work stealing or preemption
+        belongs in a different type rather than either of these.
 
   - type: textarea
     id: problem

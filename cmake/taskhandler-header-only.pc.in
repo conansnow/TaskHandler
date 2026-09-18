@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/@TASKHANDLER_PC_PREFIX_FROM_PKGCONFIG@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: taskhandler-header-only
+Description: @PROJECT_DESCRIPTION@ (header-only)
+URL: @PROJECT_HOMEPAGE_URL@
+Version: @PROJECT_VERSION@
+Cflags: -I${includedir}@TASKHANDLER_PC_HEADER_ONLY_CFLAGS@
+Libs:@TASKHANDLER_PC_HEADER_ONLY_LIBS@

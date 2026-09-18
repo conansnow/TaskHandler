@@ -6,6 +6,104 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `conan::ThreadPool`, a sibling of `TaskHandler` for work that is allowed to
+  run concurrently. Same `Queued` / `Blocked` / `Future` tags, drain-on-stop,
+  `max_pending` backpressure and exception hook. `Queued` returns `void`: there
+  is no `TaskId` and no cancel, and there are no timers, priorities or shared
+  instances. Include `conan/thread_pool.h`. A new type, so compiled-library
+  consumers rebuild; `TaskHandler` itself is unchanged.
+- Worker thread names on Windows (`SetThreadDescription`). Linux and macOS
+  already named threads; both types now share one helper.
+- Chinese translation of the public contract in [README.zh.md](README.zh.md).
+  English remains the default `README.md`.
+- Relocatable `taskhandler.pc` and `taskhandler-header-only.pc` from
+  `cmake --install`. Compiled-library flags include `TASKHANDLER_COMPILED_LIB`
+  so a pkg-config consumer does not compile the inline definitions and then
+  also link the binary.
+- Overlay vcpkg port in `ports/taskhandler` for
+  `vcpkg install taskhandler --overlay-ports=ports`. The root `vcpkg.json`
+  is still only the developer manifest (GoogleTest behind `tests`).
+- Conan 2 recipe (`conanfile.py` and `test_package/`). The package name is
+  `taskhandler`; the C++ namespace remains `conan`. CMakeDeps exposes both
+  exported targets.
+
+### Breaking
+
+- The library now requires C++23 and CMake 3.28. Rebuild consumers with a
+  toolchain that can do both; GCC 13, Clang 17, MSVC 17.7 and AppleClang are
+  the floor CI actually runs. `CMAKE_CXX_STANDARD` still defaults to 23 and is
+  still overridable, so CI rebuilds as C++26 to catch anything a newer
+  consumer would hit. CMake 3.28 is the floor because that is when
+  `CMAKE_CXX_SCAN_FOR_MODULES` exists; 4.0 is not required.
+- Submission overloads are constrained with concepts (`QueuedPolicy`,
+  `BlockedPolicy`, `FuturePolicy`, `TaskCallable`) rather than
+  `std::enable_if`. Call sites that already passed a policy tag and an
+  invocable do not change. The `detail::is_*_v` traits are gone.
+- Queued work is stored as `std::move_only_function<void()>` instead of
+  `std::unique_ptr<detail::Task>` when the standard library provides it. That
+  is an ABI break for the compiled library; rebuild against the matching
+  header. `TaskHandlerOptions::on_exception` is still `std::function`, so
+  options stay copyable. Apple's libc++ still lacks P0288R9, so those builds
+  keep an equivalent move-only type-erased callable with the same call sites.
+- The version macros remain 0.3.0 until this work is tagged. The tag that
+  ships these breaks must be 0.4.0: `SameMinorVersion` would otherwise let a
+  0.3 consumer accept an ABI-incompatible install.
+
+### Changed
+
+- `clang-format` and `clang-tidy` are pinned to major version 23. Reformat
+  with that binary; 18 will disagree.
+- The vcpkg baseline is current, which pulls GoogleTest 1.18 into the test
+  feature. The library itself still has no dependencies.
+- CMake turns off C++ module scanning (`CMAKE_CXX_SCAN_FOR_MODULES`). The
+  library is not modular, and a missing `clang-scan-deps` otherwise breaks
+  `find_package(Threads)` under Clang and CMake 3.28 or newer.
+- `add_callable_after` takes any `std::chrono::duration` through the
+  `detail::ChronoDuration` concept rather than a bare `Rep`/`Period` pair.
+  Call sites that already passed a duration do not change.
+- Shared-library exception types use `TASKHANDLER_VISIBLE` (on Windows that
+  is an alias of `TASKHANDLER_API`) so a `TaskHandlerStopped` thrown inside
+  the DLL can be caught by type outside it.
+- Task and timer destruction share one internal nothrow helper. No API change.
+- Immediate and delayed `Future` paths share one `packaged_task` helper, and
+  the leftover `detail::make_task` wrapper is gone. No API change.
+- The worker loop names its run and timer-discard phases. No API change.
+- `ThreadPoolOptions::on_exception` may run on several workers at once. The
+  hook must be safe for that, or the caller must synchronize it; the library
+  does not serialize it.
+
+### Fixed
+
+- `cancel()` destroyed the cancelled callable while still holding `mutex_`. A
+  destructor that called back into the handler deadlocked. The node is now
+  extracted under the lock and destroyed after releasing it.
+- Discarding undue timers on `stop()` cleared `worker_id_` before running
+  those destructors, so `is_current_thread()` was already false and a
+  destructor that called `start()` or `stop()` deadlocked against the joining
+  `stop()`. The worker id stays set until the discarded tasks are gone.
+- The shared-handler registry is no longer destroyed at process exit, so a
+  static destructor that calls `instance()` cannot use a dead mutex. Workers
+  are still joined via `atexit`.
+- Promoting a due timer into `ready_` could drop the callable if the insert
+  threw after the move. The mapped task is assigned only after `try_emplace`
+  has allocated the node.
+- AppleClang (Xcode 26.6 on `macos-latest`) failed to compile the C++23
+  upgrade: libc++ has no `std::move_only_function`. The queue now polyfills
+  that type so macOS debug, release and consume jobs build.
+- clang-tidy 23 rejected the leaked instance registry for
+  `modernize-use-auto`. The pointer is now `auto *`.
+- `ThreadPool::start()` left `stop_requested_` false if `reserve` or the wait
+  for worker ids threw after the flag was cleared. Submissions could then be
+  accepted with no workers to run them. Failure now restores a stopped pool
+  and joins any threads that did start, so a throwing constructor cannot
+  destroy joinable `std::thread` objects.
+- `ThreadPool::flush()` treated an empty `worker_ids_` as "done", which is
+  also true in the window after `start()` clears the ids and before the first
+  worker publishes. A concurrent `flush()` could return while the queue still
+  had work. It now requires the pool to be stopped as well.
+
 ## [0.3.0]
 
 ### Breaking

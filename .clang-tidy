@@ -22,14 +22,22 @@ Checks: >
   -misc-include-cleaner,
   -misc-non-private-member-variables-in-classes,
   -modernize-use-trailing-return-type,
+  -modernize-use-scoped-lock,
+  -modernize-use-std-print,
+  -modernize-avoid-c-style-cast,
+  -modernize-use-designated-initializers,
   -readability-braces-around-statements,
   -readability-identifier-length,
   -readability-magic-numbers,
-  -readability-redundant-member-init
+  -readability-redundant-member-init,
+  -readability-trailing-comma,
+  -readability-use-concise-preprocessor-directives,
+  -readability-redundant-lambda-parameter-list,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access
 
-# misc-definitions-in-headers fires on every definition in task_handler-inl.h,
-# which is the point of that file: it is inline in header-only builds and
-# compiled exactly once otherwise.
+# misc-definitions-in-headers fires on every definition in the *-inl.h
+# files, which is the point of those files: they are inline in header-only
+# builds and compiled exactly once otherwise.
 #
 # misc-include-cleaner fires on src/task_handler.cc, whose only job is to
 # include the two headers it is told it does not use.
@@ -37,6 +45,14 @@ Checks: >
 # misc-const-correctness wants every std::lock_guard declared const, and
 # readability-redundant-member-init wants the {} dropped from members whose
 # default constructor runs anyway. Both fight the style already in the tree.
+#
+# LLVM 23 adds several modernize/readability checks that would rephrase the
+# existing tree without changing behaviour: scoped_lock for a single mutex,
+# std::println in the dependency-free benchmark, trailing commas, #ifdef in
+# place of #if defined, and operator[] on arrays whose length is already a
+# compile-time constant. Disable them rather than restyle the library around
+# a tidy major-version bump. []() mutable still needs the empty parameter
+# list; dropping it is a compile error.
 
 WarningsAsErrors: ''
 HeaderFilterRegex: 'include/conan/.*'
@@ -46,6 +62,8 @@ CheckOptions:
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConceptCase
     value: CamelCase
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
@@ -59,7 +77,8 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.ConstexprVariablePrefix
     value: k
-  # Variable templates such as is_queued_v follow the standard library's
+  # Concept names are CamelCase like the policy tags they describe.
+  # Variable templates such as is_same_v follow the standard library's
   # convention rather than the k-prefix used for constants.
   - key: readability-identifier-naming.ConstexprVariableIgnoredRegexp
     value: '^[a-z_]+_v$'

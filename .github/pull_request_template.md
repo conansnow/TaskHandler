@@ -12,8 +12,8 @@ was in and what it did wrong.
 - [ ] `ctest --preset debug`
 - [ ] `ctest --preset asan`
 - [ ] `TSAN_OPTIONS=halt_on_error=1 ctest --preset tsan --repeat until-fail:20`
-- [ ] `clang-format-18 --dry-run --Werror $(git ls-files '*.h' '*.cc')`
-- [ ] `clang-tidy-18 -p out/build/debug --warnings-as-errors='*' ...`
+- [ ] `clang-format-23 --dry-run --Werror $(git ls-files '*.h' '*.cc')`
+- [ ] `clang-tidy-23 -p out/build/debug --warnings-as-errors='*' ...`
 - [ ] Benchmarks, if this touches the queue: before/after numbers below
 
 ## Notes
@@ -21,5 +21,6 @@ was in and what it did wrong.
 - [ ] Regression test added for anything that was broken
 - [ ] `CHANGELOG.md` updated under `## [Unreleased]`
 - [ ] Documentation updated, if the change is visible from outside
-- [ ] Breaks API or ABI (new members on `TaskHandler` or
-      `TaskHandlerOptions` do), and the changelog says so
+- [ ] Breaks API or ABI (new members on `TaskHandler`,
+      `TaskHandlerOptions`, `ThreadPool` or `ThreadPoolOptions` do),
+      and the changelog says so

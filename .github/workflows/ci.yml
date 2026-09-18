@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -48,6 +51,10 @@ jobs:
             os: macos-latest
             preset: debug
             extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
+          - name: macos-clang-release
+            os: macos-latest
+            preset: release
+            extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
           - name: windows-msvc-debug
             os: windows-latest
             preset: debug
@@ -58,7 +65,7 @@ jobs:
             extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
@@ -86,21 +93,27 @@ jobs:
         if: matrix.name == 'linux-gcc-release'
         run: ./out/build/release/benchmarks/task_handler_benchmark
 
-  # The library only promises C++17, but consumers are free to be newer than
-  # that, and a deprecation or a changed overload set breaks them rather than us.
+  # The library promises C++23, but consumers are free to be newer than that,
+  # and a deprecation or a changed overload set breaks them rather than us.
+  # Clang is used because GCC 13 on ubuntu-latest still rejects -std=c++26.
   standards:
     name: c++${{ matrix.standard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        standard: [20, 23]
+        standard: [26]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
+
+      - name: Select compiler
+        run: |
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - name: Configure
         run: cmake --preset debug -DCMAKE_CXX_STANDARD=${{ matrix.standard }}
@@ -114,18 +127,33 @@ jobs:
   # The checks that matter most for a threading library, and the reason the
   # asan and tsan presets exist.
   sanitizers:
-    name: ${{ matrix.preset }}
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        preset: [asan, tsan]
+        include:
+          - name: asan
+            preset: asan
+          - name: tsan
+            preset: tsan
+          - name: asan-clang
+            preset: asan
+            cc: clang
+            cxx: clang++
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
+
+      - name: Select compiler
+        if: matrix.cc != ''
+        shell: bash
+        run: |
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -146,7 +174,7 @@ jobs:
     name: repeat under tsan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
@@ -165,19 +193,28 @@ jobs:
   # Proves that the ways the README tells people to depend on TaskHandler
   # actually work, for both exported targets. A build-tree-only check would not
   # have caught the installed header-only target being exported under the wrong
-  # name.
+  # name. pkg-config, the vcpkg overlay and Conan 2 run on Ubuntu; macOS still
+  # covers find_package and FetchContent.
   consume:
-    name: install and consume
-    runs-on: ubuntu-latest
+    name: install and consume (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+            extra: -DTASKHANDLER_WARNINGS_AS_ERRORS=OFF
+
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
 
       - name: Build and install
         run: |
-          cmake --preset release
+          cmake --preset release ${{ matrix.extra }}
           cmake --build --preset release
           cmake --install out/build/release
 
@@ -201,29 +238,79 @@ jobs:
           ./out/consumer-fetchcontent/consumer_compiled
           ./out/consumer-fetchcontent/consumer_header_only
 
+      - name: Consume via pkg-config
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pcdir=$(find out/install/release -type d -name pkgconfig | head -n 1)
+          if [ -z "$pcdir" ]; then
+            echo "no pkgconfig directory under out/install/release" >&2
+            exit 1
+          fi
+          export PKG_CONFIG_PATH="$pcdir${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          pkg-config --exists --print-errors taskhandler
+          pkg-config --exists --print-errors taskhandler-header-only
+          pkg-config --cflags --libs taskhandler
+          pkg-config --cflags --libs taskhandler-header-only
+          cmake -S ci/consumer -B out/consumer-pkgconfig -G Ninja \
+            -DTASKHANDLER_CONSUMER_MODE=pkgconfig
+          cmake --build out/consumer-pkgconfig
+          libdir=$(pkg-config --variable=libdir taskhandler)
+          export LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          ./out/consumer-pkgconfig/consumer_compiled
+          ./out/consumer-pkgconfig/consumer_header_only
+
+      - name: Consume via vcpkg overlay
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          case "$(uname -m)" in
+            x86_64) TRIPLET=x64-linux ;;
+            aarch64) TRIPLET=arm64-linux ;;
+            *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;;
+          esac
+          "$VCPKG_ROOT/vcpkg" install taskhandler \
+            --overlay-ports="$PWD/ports" \
+            --triplet "$TRIPLET" \
+            --classic \
+            --x-install-root="$PWD/out/vcpkg-installed"
+          cmake -S ci/consumer -B out/consumer-vcpkg -G Ninja \
+            -DCMAKE_PREFIX_PATH="$PWD/out/vcpkg-installed/$TRIPLET"
+          cmake --build out/consumer-vcpkg
+          ./out/consumer-vcpkg/consumer_compiled
+          ./out/consumer-vcpkg/consumer_header_only
+
+      - name: Consume via Conan 2
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python3 -m pip install --user "conan>=2.0.14,<3"
+          export PATH="$HOME/.local/bin:$PATH"
+          conan profile detect --force
+          conan create . --version=0.3.0 -s compiler.cppstd=23
+
   format:
     name: clang-format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pinned: clang-format's output drifts between major versions, so an
       # unpinned runner upgrade would fail this job on untouched code.
+      # llvm.sh is checksummed in ci/install-llvm-tools.sh because it runs
+      # as root.
       - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format-18
+        run: ci/install-llvm-tools.sh clang-format-23
 
       # Driven off git rather than a list of directories, so a source file in a
       # directory nobody remembered to add here cannot escape the check.
       - name: Check formatting
         run: |
-          clang-format-18 --version
-          clang-format-18 --dry-run --Werror $(git ls-files '*.h' '*.cc')
+          clang-format-23 --version
+          clang-format-23 --dry-run --Werror $(git ls-files '*.h' '*.cc')
 
   tidy:
     name: clang-tidy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
@@ -233,9 +320,7 @@ jobs:
       # default. Without this, every include resolves to "file not found" and
       # the results are meaningless rather than merely wrong.
       - name: Install clang-tidy
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-tidy-18 libstdc++-14-dev
+        run: ci/install-llvm-tools.sh clang-tidy-23 libstdc++-14-dev
 
       - name: Configure
         run: cmake --preset debug
@@ -247,7 +332,7 @@ jobs:
       # it this job only ever caught a translation unit that would not compile.
       - name: Run clang-tidy
         run: |
-          clang-tidy-18 --version
-          clang-tidy-18 -p out/build/debug --warnings-as-errors='*' \
-            src/task_handler.cc examples/basic.cc \
-            benchmarks/task_handler_benchmark.cc
+          clang-tidy-23 --version
+          clang-tidy-23 -p out/build/debug --warnings-as-errors='*' \
+            src/task_handler.cc src/thread_pool.cc examples/basic.cc \
+            examples/thread_pool.cc benchmarks/task_handler_benchmark.cc

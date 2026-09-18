@@ -4,13 +4,14 @@
   "description": "A small single-worker task queue and event handler for C++23",
   "homepage": "https://github.com/conansnow/TaskHandler",
   "license": "MIT",
-  "dependencies": [],
-  "features": {
-    "tests": {
-      "description": "Build the test suite",
-      "dependencies": [
-        "gtest"
-      ]
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
     }
-  }
+  ]
 }

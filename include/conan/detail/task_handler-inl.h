@@ -10,14 +10,11 @@
 #include "conan/task_handler.h"
 #endif
 
-#include <array>
-#include <map>
-#include <string>
-#include <utility>
+#include "conan/detail/thread_name.h"
 
-#if defined(__linux__) || defined(__APPLE__)
-#include <pthread.h>
-#endif
+#include <array>
+#include <cstdlib>
+#include <format>
 
 namespace conan {
 
@@ -109,26 +106,7 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
     promote_due_timers(std::chrono::steady_clock::now());
 
     if (!ready_.empty()) {
-      auto next = ready_.begin();
-      std::unique_ptr<detail::Task> task = std::move(next->second);
-      ready_.erase(next);
-      busy_ = true;
-
-      lock.unlock();
-      try {
-        task->run();
-      } catch (...) {
-        report_exception(std::current_exception());
-      }
-      try {
-        task.reset();
-      } catch (...) {
-        report_exception(std::current_exception());
-      }
-      lock.lock();
-
-      busy_ = false;
-      idle_cv_.notify_all();
+      run_one_ready_task(lock);
       continue;
     }
 
@@ -144,33 +122,69 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
       work_cv_.wait(lock);
   }
 
+  discard_undue_timers(lock);
+  // Cleared only after discarded timers are gone: their destructors still
+  // need is_current_thread() to answer true.
+  worker_id_ = std::thread::id{};
+  idle_cv_.notify_all();
+}
+
+TASKHANDLER_INLINE void
+TaskHandler::run_one_ready_task(std::unique_lock<std::mutex> &lock) {
+  auto node = ready_.extract(ready_.begin());
+  detail::Task task = std::move(node.mapped());
+  busy_ = true;
+
+  lock.unlock();
+  try {
+    task();
+  } catch (...) {
+    report_exception(std::current_exception());
+  }
+  destroy_user_code_nothrow([&task] { task = nullptr; });
+  lock.lock();
+
+  busy_ = false;
+  idle_cv_.notify_all();
+}
+
+TASKHANDLER_INLINE void
+TaskHandler::discard_undue_timers(std::unique_lock<std::mutex> &lock) {
   // Delayed tasks that never came due are dropped rather than held for a later
   // start(): stop() promises to discard them, and keeping them would leave
   // pending() counting work that nothing is going to run. They are destroyed
   // below with the lock released, because a task's destructor is user code and
-  // may well touch this handler.
+  // may well touch this handler. worker_id_ stays set until that is done so
+  // is_current_thread() is still true: a destructor that calls start() or
+  // stop() must not try to take lifecycle_mutex_ against a join already in
+  // progress.
   std::map<detail::TimerKey, detail::TimerEntry> discarded;
   discarded.swap(timed_);
 
-  worker_id_ = std::thread::id{};
-  idle_cv_.notify_all();
   lock.unlock();
-  try {
-    discarded.clear();
-  } catch (...) {
-    report_exception(std::current_exception());
-  }
+  destroy_user_code_nothrow([&discarded] { discarded.clear(); });
+  lock.lock();
 }
 
 TASKHANDLER_INLINE void
 TaskHandler::promote_due_timers(std::chrono::steady_clock::time_point now) {
   while (!timed_.empty() && timed_.begin()->first.deadline <= now) {
-    auto due = timed_.begin();
-    // Keeping the original sequence number means a task stays cancellable
-    // across the move from the timer queue to the runnable queue.
-    ready_.emplace(detail::ReadyKey{due->second.priority, due->first.sequence},
-                   std::move(due->second.task));
-    timed_.erase(due);
+    auto node = timed_.extract(timed_.begin());
+    try {
+      // Keeping the original sequence number means a task stays cancellable
+      // across the move. try_emplace default-constructs an empty Task first
+      // so a throwing allocation cannot consume the callable; moving the
+      // stored Task is noexcept.
+      auto it =
+          ready_
+              .try_emplace(detail::ReadyKey{.priority = node.mapped().priority,
+                                            .sequence = node.key().sequence})
+              .first;
+      it->second = std::move(node.mapped().task);
+    } catch (...) {
+      timed_.insert(std::move(node));
+      throw;
+    }
   }
 }
 
@@ -182,8 +196,7 @@ TASKHANDLER_INLINE void TaskHandler::ensure_accepting() const {
     throw TaskHandlerQueueFull{};
 }
 
-TASKHANDLER_INLINE TaskId
-TaskHandler::submit(std::unique_ptr<detail::Task> task, int priority) {
+TASKHANDLER_INLINE TaskId TaskHandler::submit(detail::Task task, int priority) {
   TaskId id;
   {
     std::lock_guard<std::mutex> lock{mutex_};
@@ -192,14 +205,16 @@ TaskHandler::submit(std::unique_ptr<detail::Task> task, int priority) {
     id.kind_ = TaskId::Kind::ready;
     id.priority_ = priority;
     id.sequence_ = ++sequence_;
-    ready_.emplace(detail::ReadyKey{priority, id.sequence_}, std::move(task));
+    ready_.emplace(
+        detail::ReadyKey{.priority = priority, .sequence = id.sequence_},
+        std::move(task));
   }
   work_cv_.notify_one();
   return id;
 }
 
 TASKHANDLER_INLINE TaskId
-TaskHandler::submit_at(std::unique_ptr<detail::Task> task, int priority,
+TaskHandler::submit_at(detail::Task task, int priority,
                        std::chrono::steady_clock::time_point deadline) {
   TaskId id;
   {
@@ -210,8 +225,9 @@ TaskHandler::submit_at(std::unique_ptr<detail::Task> task, int priority,
     id.priority_ = priority;
     id.sequence_ = ++sequence_;
     id.deadline_ = deadline;
-    timed_.emplace(detail::TimerKey{deadline, id.sequence_},
-                   detail::TimerEntry{priority, std::move(task)});
+    timed_.emplace(
+        detail::TimerKey{.deadline = deadline, .sequence = id.sequence_},
+        detail::TimerEntry{.priority = priority, .task = std::move(task)});
   }
   // Notified unconditionally: the new deadline may be earlier than the one the
   // worker is currently sleeping on, in which case it has to re-arm.
@@ -223,12 +239,38 @@ TASKHANDLER_INLINE bool TaskHandler::cancel(const TaskId &id) {
   if (!id.valid())
     return false;
 
-  std::lock_guard<std::mutex> lock{mutex_};
-  if (id.kind_ == TaskId::Kind::timed &&
-      timed_.erase(detail::TimerKey{id.deadline_, id.sequence_}) != 0)
-    return true;
+  detail::Task discarded;
+  bool cancelled = false;
+  bool cancelled_timer = false;
+  {
+    std::lock_guard<std::mutex> lock{mutex_};
+    // Kind::timed means the task was submitted delayed. Promotion does not
+    // rewrite the caller's TaskId, so a due timer may already be in ready_.
+    // Looking only at timed_ would make post-promotion cancel a no-op.
+    if (id.kind_ == TaskId::Kind::timed) {
+      if (auto node = timed_.extract(detail::TimerKey{
+              .deadline = id.deadline_, .sequence = id.sequence_})) {
+        discarded = std::move(node.mapped().task);
+        cancelled = true;
+        cancelled_timer = true;
+      }
+    }
+    if (!cancelled) {
+      if (auto node = ready_.extract(detail::ReadyKey{
+              .priority = id.priority_, .sequence = id.sequence_})) {
+        discarded = std::move(node.mapped());
+        cancelled = true;
+      }
+    }
+  }
 
-  return ready_.erase(detail::ReadyKey{id.priority_, id.sequence_}) != 0;
+  // Cancelling the timer the worker is sleeping on would otherwise leave it
+  // parked until that (now stale) deadline.
+  if (cancelled_timer)
+    work_cv_.notify_one();
+
+  destroy_user_code_nothrow([&discarded] { discarded = nullptr; });
+  return cancelled;
 }
 
 TASKHANDLER_INLINE std::size_t TaskHandler::pending() const {
@@ -259,6 +301,15 @@ TASKHANDLER_INLINE bool TaskHandler::running() const {
 }
 
 TASKHANDLER_INLINE void
+TaskHandler::destroy_user_code_nothrow(auto &&destroy) const noexcept {
+  try {
+    std::invoke(std::forward<decltype(destroy)>(destroy));
+  } catch (...) {
+    report_exception(std::current_exception());
+  }
+}
+
+TASKHANDLER_INLINE void
 TaskHandler::report_exception(std::exception_ptr error) const noexcept {
   if (!options_.on_exception)
     return;
@@ -271,16 +322,7 @@ TaskHandler::report_exception(std::exception_ptr error) const noexcept {
 }
 
 TASKHANDLER_INLINE void TaskHandler::apply_thread_name() const noexcept {
-  if (options_.thread_name.empty())
-    return;
-
-#if defined(__linux__)
-  // Linux caps thread names at 16 bytes including the terminator.
-  const std::string name = options_.thread_name.substr(0, 15);
-  pthread_setname_np(pthread_self(), name.c_str());
-#elif defined(__APPLE__)
-  pthread_setname_np(options_.thread_name.c_str());
-#endif
+  detail::set_current_thread_name(options_.thread_name);
 }
 
 namespace detail {
@@ -337,11 +379,11 @@ private:
   TaskHandler *create(std::size_t index) {
     if (handlers_[index] == nullptr) {
       TaskHandlerOptions options;
-      options.thread_name = "conan-task-" + std::to_string(index);
+      options.thread_name = std::format("conan-task-{}", index);
       // Deliberately never freed. A reference handed out by instance() has to
       // stay valid for the rest of the program, including while other static
-      // objects are running their destructors, so the handlers outlive this
-      // registry and only their worker threads are shut down.
+      // objects are running their destructors. The registry itself is leaked
+      // for the same reason; only the worker threads are shut down.
       handlers_[index] = new TaskHandler{std::move(options)};
     }
     return handlers_[index];
@@ -352,8 +394,17 @@ private:
 };
 
 TASKHANDLER_INLINE InstanceRegistry &registry() {
-  static InstanceRegistry instance;
-  return instance;
+  // Never destroyed. A static destructor that calls instance() after this
+  // object's usual lifetime would otherwise touch a dead mutex. Handlers are
+  // leaked for the same reason. atexit still joins the workers so process
+  // exit matches uninit().
+  static auto *instance = new InstanceRegistry;
+  static const int atexit_stop = [] {
+    std::atexit([] { instance->stop_all(); });
+    return 0;
+  }();
+  static_cast<void>(atexit_stop);
+  return *instance;
 }
 
 } // namespace detail

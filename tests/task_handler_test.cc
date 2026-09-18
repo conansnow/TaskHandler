@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <future>
 #include <limits>
 #include <memory>
@@ -118,6 +119,39 @@ struct ReinitGuard {
   ~ReinitGuard() { TaskHandler::init(); }
 };
 
+// Parks until running() is false or the hang timeout elapses. Used when a
+// stop was requested from inside a task, so the worker has not joined yet.
+void wait_until_not_running(TaskHandler &handler) {
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (handler.running() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
+// Runs `on_destroy` from a task destructor without holding the library mutex.
+// The two regression tests differ only in what they call back into.
+struct Touch {
+  Touch(TaskHandler *owner, std::shared_ptr<std::atomic_bool> done,
+        std::function<void(TaskHandler &)> fn)
+      : handler{owner}, flag{std::move(done)}, on_destroy{std::move(fn)} {}
+  TaskHandler *handler{};
+  std::shared_ptr<std::atomic_bool> flag;
+  std::function<void(TaskHandler &)> on_destroy;
+  ~Touch() {
+    if (handler == nullptr || !flag)
+      return;
+    on_destroy(*handler);
+    *flag = true;
+  }
+};
+
+#if defined(__linux__)
+std::string current_thread_name() {
+  char buffer[32]{};
+  pthread_getname_np(pthread_self(), buffer, sizeof(buffer));
+  return std::string{buffer};
+}
+#endif
+
 } // namespace
 
 TEST(task_handler, blocked_runs_before_returning) {
@@ -172,6 +206,20 @@ TEST(task_handler, accepts_move_only_callables) {
 
   ASSERT_EQ(std::future_status::ready, done_future.wait_for(kTimeout));
   EXPECT_EQ(kNum, done_future.get());
+}
+
+TEST(task_handler, blocked_and_future_accept_move_only_callables) {
+  auto owned = std::make_unique<int>(kNum);
+  int value{};
+  TaskHandler::instance().add_callable<Blocked>(
+      [&value, owned = std::move(owned)] { value = *owned; });
+  EXPECT_EQ(kNum, value);
+
+  auto owned_future = std::make_unique<int>(kNum);
+  std::future<int> future_tmp = TaskHandler::instance().add_callable<Future>(
+      [owned_future = std::move(owned_future)] { return *owned_future; });
+  ASSERT_EQ(std::future_status::ready, future_tmp.wait_for(kTimeout));
+  EXPECT_EQ(kNum, future_tmp.get());
 }
 
 TEST(task_handler, future_callable_outlives_caller_frame) {
@@ -406,6 +454,50 @@ TEST(task_handler, cancel_of_a_finished_or_invalid_task_is_false) {
   EXPECT_FALSE(TaskId{}.valid());
 }
 
+TEST(task_handler, cancel_of_a_running_task_is_false) {
+  TaskHandler handler;
+  auto entered = std::make_shared<std::promise<void>>();
+  auto release = std::make_shared<std::promise<void>>();
+  auto entered_future = entered->get_future();
+  std::shared_future<void> released = release->get_future().share();
+
+  const TaskId id = handler.add_callable([entered, released] {
+    entered->set_value();
+    released.wait();
+  });
+  ASSERT_EQ(std::future_status::ready, entered_future.wait_for(kTimeout));
+  EXPECT_FALSE(handler.cancel(id));
+  release->set_value();
+  handler.flush();
+}
+
+// Regression: cancel() used to destroy the callable while holding mutex_, so a
+// destructor that called back into the handler deadlocked.
+TEST(task_handler, cancel_runs_task_destructor_without_holding_the_mutex) {
+  TaskHandler handler;
+  auto reentered = std::make_shared<std::atomic_bool>(false);
+  Gate gate{handler};
+
+  const TaskId queued =
+      handler.add_callable([touch = std::make_shared<Touch>(
+                                &handler, reentered, [](TaskHandler &owner) {
+                                  (void)owner.pending();
+                                })] { (void)touch; });
+  EXPECT_TRUE(handler.cancel(queued));
+  EXPECT_TRUE(reentered->load());
+
+  *reentered = false;
+  const TaskId delayed = handler.add_callable_after(
+      std::chrono::hours(1), [touch = std::make_shared<Touch>(
+                                  &handler, reentered, [](TaskHandler &owner) {
+                                    (void)owner.pending();
+                                  })] { (void)touch; });
+  EXPECT_TRUE(handler.cancel(delayed));
+  EXPECT_TRUE(reentered->load());
+
+  gate.release();
+}
+
 TEST(task_handler, task_ids_compare_by_value) {
   EXPECT_EQ(TaskId{}, TaskId{});
   EXPECT_FALSE(TaskId{} != TaskId{});
@@ -447,11 +539,14 @@ TEST(task_handler, scheduled_tasks_run_in_deadline_order) {
   // go; they then fall into ready_ by sequence (submission order), which is
   // 3, 1, 2 rather than deadline order. Release immediately after queueing
   // so the worker wait_until's the earliest deadline from a known start.
-  // Sleeping until "only the first is due" overshoots on a loaded runner
-  // and promotes 1 and 2 together, which is a test flake, not a product bug.
+  //
+  // The slot has to outlast a slow debug/shared-library promotion: macOS
+  // debug CI ran 1, then promoted 2 and 3 together and executed them as
+  // 3, 2 (sequence order) when the gap was 100 ms. That is a test flake,
+  // not a product bug -- the same run's header-only binary passed.
   Gate gate{handler};
   const auto base = std::chrono::steady_clock::now();
-  constexpr auto kSlot = std::chrono::milliseconds(100);
+  constexpr auto kSlot = std::chrono::milliseconds(500);
 
   handler.add_callable_at(base + 3 * kSlot,
                           [recorder] { recorder->record(3); });
@@ -540,10 +635,27 @@ TEST(task_handler, stop_discards_undue_scheduled_tasks) {
   EXPECT_EQ(0U, handler.pending());
 
   handler.start();
+  EXPECT_EQ(0U, handler.pending());
   handler.add_callable<Blocked>([] {});
-  std::this_thread::sleep_for(std::chrono::milliseconds(60));
-  handler.flush();
   EXPECT_FALSE(ran->load());
+}
+
+// Regression: stop() used to clear worker_id_ before destroying undue timers,
+// so a destructor that called start() or stop() took lifecycle_mutex_ against
+// the join already in progress and deadlocked.
+TEST(task_handler, discarded_timer_destructor_can_call_start_during_stop) {
+  TaskHandler handler;
+  auto returned = std::make_shared<std::atomic_bool>(false);
+
+  handler.add_callable_after(std::chrono::hours(1),
+                             [touch = std::make_shared<Touch>(
+                                  &handler, returned, [](TaskHandler &owner) {
+                                    owner.start();
+                                    owner.stop();
+                                  })] { (void)touch; });
+  handler.stop();
+  EXPECT_TRUE(returned->load());
+  EXPECT_FALSE(handler.running());
 }
 
 TEST(task_handler, delayed_future_returns_the_tasks_own_type) {
@@ -609,6 +721,22 @@ TEST(task_handler, max_pending_refuses_work_instead_of_growing) {
   gate.release();
   handler.flush();
   handler.add_callable<Blocked>([] {});
+}
+
+TEST(task_handler, max_pending_counts_ready_and_timed_together) {
+  TaskHandlerOptions options;
+  options.max_pending = 2;
+  TaskHandler handler{std::move(options)};
+
+  Gate gate{handler};
+  handler.add_callable([] {});
+  handler.add_callable_after(std::chrono::hours(1), [] {});
+  EXPECT_EQ(2U, handler.pending());
+  EXPECT_THROW(handler.add_callable([] {}), conan::TaskHandlerQueueFull);
+  EXPECT_THROW(handler.add_callable_after(std::chrono::hours(1), [] {}),
+               conan::TaskHandlerQueueFull);
+  EXPECT_EQ(2U, handler.pending());
+  gate.release();
 }
 
 TEST(task_handler, max_pending_does_not_refuse_recursive_submissions) {
@@ -687,6 +815,20 @@ TEST(task_handler, exception_hook_is_not_used_for_blocked_or_future) {
   EXPECT_EQ(0, hook_calls->load());
 }
 
+TEST(task_handler, exception_hook_failure_does_not_kill_the_worker) {
+  TaskHandlerOptions options;
+  options.on_exception = [](std::exception_ptr) {
+    throw std::runtime_error("hook boom");
+  };
+  TaskHandler handler{std::move(options)};
+
+  handler.add_callable([] { throw std::runtime_error("queued boom"); });
+
+  int num_tmp{};
+  handler.add_callable<Blocked>([&] { num_tmp = kNum; });
+  EXPECT_EQ(kNum, num_tmp);
+}
+
 TEST(task_handler, submitting_to_a_stopped_handler_throws) {
   TaskHandler handler;
   handler.stop();
@@ -696,6 +838,31 @@ TEST(task_handler, submitting_to_a_stopped_handler_throws) {
   EXPECT_THROW(handler.add_callable<Future>([] {}), TaskHandlerStopped);
   EXPECT_THROW(handler.add_callable_after(std::chrono::seconds(1), [] {}),
                TaskHandlerStopped);
+}
+
+TEST(task_handler, stopped_and_full_are_catchable_by_their_own_type) {
+  TaskHandler handler;
+  handler.stop();
+  try {
+    handler.add_callable([] {});
+    FAIL() << "expected TaskHandlerStopped";
+  } catch (const TaskHandlerStopped &) {
+  } catch (...) {
+    FAIL() << "TaskHandlerStopped was not catchable by type";
+  }
+
+  TaskHandlerOptions options;
+  options.max_pending = 1;
+  TaskHandler bounded{std::move(options)};
+  Gate gate{bounded};
+  bounded.add_callable([] {});
+  try {
+    bounded.add_callable([] {});
+    FAIL() << "expected TaskHandlerQueueFull";
+  } catch (const conan::TaskHandlerQueueFull &) {
+  } catch (...) {
+    FAIL() << "TaskHandlerQueueFull was not catchable by type";
+  }
 }
 
 TEST(task_handler, stop_and_start_are_idempotent_and_reversible) {
@@ -736,9 +903,7 @@ TEST(task_handler, start_revives_a_handler_stopped_from_inside_a_task) {
 
   // The worker finishes unwinding out of the task on its own, so wait for the
   // stop to take effect rather than assuming it already has.
-  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-  while (handler.running() && std::chrono::steady_clock::now() < deadline)
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  wait_until_not_running(handler);
   ASSERT_FALSE(handler.running());
 
   // start() joins the exiting worker if it has not finished yet, then
@@ -761,9 +926,7 @@ TEST(task_handler, start_from_inside_a_task_does_not_deadlock_against_stop) {
   auto returned_future = returned->get_future();
 
   handler.add_callable([&handler, returned] {
-    // Long enough for the stop() below to be waiting in join() by the time
-    // start() is called, which is the case that used to hang.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_until_not_running(handler);
     handler.start();
     returned->set_value();
   });
@@ -871,9 +1034,7 @@ TEST(task_handler, uninit_does_not_deadlock_when_a_task_calls_instance) {
 
   std::thread shutting_down{[] { TaskHandler::uninit(); }};
 
-  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
-  while (handler0.running() && std::chrono::steady_clock::now() < deadline)
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  wait_until_not_running(handler0);
   ASSERT_FALSE(handler0.running());
 
   release->set_value();
@@ -888,23 +1049,15 @@ TEST(task_handler, worker_thread_is_named) {
   options.thread_name = "th-named";
   TaskHandler handler{std::move(options)};
 
-  auto name = handler.add_callable<Future>([] {
-    char buffer[32]{};
-    pthread_getname_np(pthread_self(), buffer, sizeof(buffer));
-    return std::string{buffer};
-  });
+  auto name =
+      handler.add_callable<Future>([] { return current_thread_name(); });
   ASSERT_EQ(std::future_status::ready, name.wait_for(kTimeout));
   EXPECT_EQ(std::string{"th-named"}, name.get());
 }
 
 TEST(task_handler, shared_handlers_get_distinct_thread_names) {
   auto name_of = [](TaskHandler &handler) {
-    return handler
-        .add_callable<Future>([] {
-          char buffer[32]{};
-          pthread_getname_np(pthread_self(), buffer, sizeof(buffer));
-          return std::string{buffer};
-        })
+    return handler.add_callable<Future>([] { return current_thread_name(); })
         .get();
   };
   EXPECT_EQ(std::string{"conan-task-0"}, name_of(TaskHandler::instance<0>()));

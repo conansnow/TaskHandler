@@ -1,0 +1,10 @@
+taskhandler provides CMake targets:
+
+    find_package(TaskHandler CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE TaskHandler::task_handler)
+
+    # or the header-only target:
+    target_link_libraries(main PRIVATE TaskHandler::header_only)
+
+The C++ namespace is conan. The vcpkg / pkg-config / Conan package name is
+taskhandler. Pick one CMake target per binary and do not mix them.

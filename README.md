@@ -1,12 +1,19 @@
 # TaskHandler
 
-A small single-worker task queue for C++17.
+**English** | [中文](README.zh.md)
+
+A small single-worker task queue for C++23, plus a sibling thread pool for
+work that is allowed to run concurrently.
 
 Every handler owns exactly one thread, and everything submitted to that handler
 runs on it, one task at a time. That is what makes it useful as an event
 handler: state owned by a handler needs no locking, because only its worker
 ever touches it. Submit work and forget about it, submit work and wait for it,
 or submit work and take a future for the result.
+
+CPU work that can overlap belongs on `ThreadPool`, not on a second worker
+inside the handler. Bounce results back onto a handler when they must touch
+handler-owned state.
 
 Usable header-only or as a compiled library, from the same source.
 
@@ -35,6 +42,7 @@ std::cout << answer.get() << '\n';
 - [Errors](#errors)
 - [Backpressure](#backpressure)
 - [Shared handlers](#shared-handlers)
+- [Thread pool](#thread-pool)
 - [Lifetime](#lifetime)
 - [Options](#options)
 - [Version](#version)
@@ -47,8 +55,9 @@ std::cout << answer.get() << '\n';
 
 ### Header-only
 
-Copy `include/conan/` into your project and include the header. Nothing else
-is needed, though you still have to link a thread library:
+Copy `include/conan/` into your project and include the header. The consumer
+must compile as C++23. Nothing else is needed, though you still have to link a
+thread library:
 
 ```cmake
 find_package(Threads REQUIRED)
@@ -102,6 +111,55 @@ Two targets are exported:
 `TaskHandler::task_handler` propagates `TASKHANDLER_COMPILED_LIB` (and
 `TASKHANDLER_SHARED_LIB` for shared builds) on its own, so there is nothing to
 define by hand. Pick one target per binary and do not mix them.
+
+The C++ namespace is `conan`. The CMake package name is `TaskHandler`. The
+vcpkg, Conan and pkg-config names are all `taskhandler`. Those last three are
+not in the official registries yet: the recipes in this tree install the
+current sources. A Conan Center / microsoft/vcpkg submission needs a tagged
+release.
+
+### With vcpkg (overlay)
+
+```sh
+vcpkg install taskhandler --overlay-ports=path/to/TaskHandler/ports
+```
+
+```cmake
+find_package(TaskHandler CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
+```
+
+The overlay port lives in `ports/taskhandler` and builds this tree. It is not
+the project's own `vcpkg.json`, which only pulls GoogleTest for developers.
+
+### With Conan 2
+
+```sh
+conan create path/to/TaskHandler --version=0.3.0 -s compiler.cppstd=23
+```
+
+```cmake
+# Configure with the CMakeToolchain and CMakeDeps Conan generated, then:
+find_package(TaskHandler 0.3 REQUIRED)
+target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
+```
+
+The recipe exposes both CMake targets through CMakeDeps. `test_package/`
+links both of them.
+
+### With pkg-config
+
+After `cmake --install`, point `PKG_CONFIG_PATH` at `${prefix}/lib/pkgconfig`
+(or `${prefix}/lib/<triplet>/pkgconfig` on Debian multiarch):
+
+```sh
+pkg-config --cflags --libs taskhandler
+pkg-config --cflags --libs taskhandler-header-only
+```
+
+That is also the Meson (`dependency('taskhandler')`) and xmake
+(`add_requires("pkgconfig::taskhandler")`) path. CPM.cmake is FetchContent
+with a wrapper; use the FetchContent snippet above.
 
 ## Submitting work
 
@@ -213,6 +271,9 @@ only wants to know that the handler would not take the work can catch one type.
 | `conan::TaskHandlerError` | Base of both; also a `std::runtime_error` |
 | `conan::TaskHandlerStopped` | The handler has been stopped |
 | `conan::TaskHandlerQueueFull` | `max_pending` tasks are already waiting |
+| `conan::ThreadPoolError` | Base of the pool's refusal exceptions |
+| `conan::ThreadPoolStopped` | The pool has been stopped |
+| `conan::ThreadPoolQueueFull` | The pool already holds `max_pending` tasks |
 
 ## Backpressure
 
@@ -266,6 +327,69 @@ conan::TaskHandler render_thread;
 conan::TaskHandler io_thread;
 ```
 
+## Thread pool
+
+`ThreadPool` is the type for work that is allowed to run concurrently.
+`TaskHandler` stays one worker: that is the whole point of it. Include
+`conan/thread_pool.h` and construct a pool you own. There is no process-wide
+pool.
+
+```cpp
+#include "conan/thread_pool.h"
+
+conan::ThreadPoolOptions options;
+options.thread_count = 4;                 // 0 means max(1, hardware_concurrency())
+options.thread_name_prefix = "crunch";    // workers are crunch-0, crunch-1, ...
+conan::ThreadPool pool{std::move(options)};
+
+pool.add_callable([] { crunch(); });
+pool.add_callable<conan::Blocked>([&] { value = crunch(); });
+std::future<int> answer = pool.add_callable<conan::Future>([] { return crunch(); });
+```
+
+The policy tags are the same ones the handler uses. `Queued` returns `void`:
+a pool does not cancel queued work, so there is no `TaskId`. Delayed work
+stays on a handler; one thread should sleep on deadlines. Workers share one
+FIFO queue: a single worker runs queued tasks in submission order; tasks on
+different workers may overlap.
+
+Bounce a result onto a handler when it must touch handler-owned state:
+
+```cpp
+conan::TaskHandler handler;
+conan::ThreadPool pool;
+
+pool.add_callable([&handler] {
+  const int result = crunch();
+  handler.add_callable([result] { apply(result); });
+});
+```
+
+```cpp
+std::size_t ThreadPool::pending() const;  // accepted, not yet started
+void ThreadPool::flush();                 // wait until the workers are idle
+bool ThreadPool::is_worker_thread() const;
+bool ThreadPool::running() const;
+std::size_t ThreadPool::thread_count() const noexcept;
+void ThreadPool::start();                 // idempotent
+void ThreadPool::stop();                  // drain, stop, join; idempotent
+```
+
+`stop()` drains accepted work. `flush()` waits until every task submitted so
+far has finished and the workers are idle; called from a worker it returns
+immediately, since waiting there could only deadlock. `start()` and `stop()`
+from inside a task follow the handler: `stop()` only records the request, and
+`start()` does nothing, because a worker cannot join itself.
+
+`max_pending` refuses with `ThreadPoolQueueFull` rather than blocking.
+Recursive `Blocked` and `Future` from a worker run inline, which keeps a
+1-thread pool from deadlocking on itself. If every worker is blocked waiting
+for more pool work, the pool still deadlocks: that is the same hazard as any
+fixed-size pool.
+
+`on_exception` may run on several workers at once. The hook must be safe for
+that, or the caller must synchronize it; the library will not.
+
 ## Lifetime
 
 Constructing a handler starts its worker. Destroying it runs everything already
@@ -308,9 +432,10 @@ struct TaskHandlerOptions {
 };
 ```
 
-`thread_name` is applied on Linux and macOS and ignored elsewhere. Linux
-truncates it to 15 characters. The shared handlers name themselves
-`conan-task-0` through `conan-task-2`.
+`thread_name` is applied on Linux, macOS and Windows. Linux truncates it to 15
+characters. The shared handlers name themselves `conan-task-0` through
+`conan-task-2`. Pool workers use `thread_name_prefix` the same way, as
+`{prefix}-{index}`.
 
 `thread_name` is applied when the worker starts. `on_exception` and
 `max_pending` apply for the life of the handler. Changing any of them afterwards
@@ -363,19 +488,24 @@ header-only and compiled builds cannot quietly diverge.
 | `TASKHANDLER_WARNINGS_AS_ERRORS` | `OFF` | `-Werror` / `/WX` |
 | `BUILD_SHARED_LIBS` | `OFF` | Shared instead of static |
 
-`examples/basic.cc` is a runnable tour of everything above.
+`examples/basic.cc` is a runnable tour of the handler. `examples/thread_pool.cc`
+covers the pool, including bouncing a result onto a handler.
 `benchmarks/task_handler_benchmark.cc` times submission, scheduling and the
 round trips; run it before and after a change to the queue.
 
-The library needs C++17, and CI also rebuilds everything as C++20 and C++23, so
-a newer consumer is covered too.
+The library needs C++23 (GCC 13, Clang 17, MSVC 17.7, or AppleClang) and
+CMake 3.28. CI also rebuilds everything as C++26, so a newer consumer is
+covered too. Apple's libc++ still lacks `std::move_only_function`; those
+builds use a small polyfill for the queued callable.
 
 ## Guarantees and limits
 
 What you can rely on:
 
 - One worker per handler, so tasks on the same handler never run concurrently.
-- Higher priority first; equal priority in submission order.
+- Tasks on a `ThreadPool` may run concurrently; protect shared state. A
+  single worker still runs its queued tasks in submission order.
+- Higher priority first on a handler; equal priority in submission order.
 - `stop()` and destruction run the work already accepted.
 - A delayed task never runs before its deadline.
 - A reference from `instance()` stays valid for the life of the program.
@@ -393,6 +523,8 @@ What to watch out for:
 - Priority does not preempt. One long task delays everything behind it.
 - Mixing `TaskHandler::header_only` and `TaskHandler::task_handler` in one
   binary gives you two sets of shared handlers. Pick one.
+- If every `ThreadPool` worker is blocked waiting for more pool work, the
+  pool deadlocks. Inline-on-worker does not fix that.
 
 ## Contributing
 

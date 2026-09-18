@@ -39,6 +39,10 @@
 vcpkg_installed/
 CMakeUserPresets.json
 
+# Conan 2 local droppings from `conan create .`
+/test_package/build/
+/test_package/CMakeUserPresets.json
+
 # Editor and tool droppings
 .cache/
 compile_commands.json

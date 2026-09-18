@@ -1,3 +1,5 @@
+// Keep in sync with ci/consumer/main.cc. test_package is copied out of the
+// tree during `conan create`, so it cannot include that file by relative path.
 #include "conan/task_handler.h"
 #include "conan/thread_pool.h"
 
@@ -27,9 +29,6 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  // Also a check that the version symbol is exported by the shared build, and
-  // that the header the consumer compiled against is the one the library was
-  // built from.
   if (std::strcmp(conan::runtime_version(), TASKHANDLER_VERSION_STRING) != 0) {
     std::fprintf(stderr, "version skew: header %s, library %s\n",
                  TASKHANDLER_VERSION_STRING, conan::runtime_version());
