@@ -129,7 +129,8 @@ naming. Beyond that:
   queued work. The latter requires copy-constructible targets and
   would reject a lambda that captured a `std::unique_ptr`.
   `TaskHandlerOptions::on_exception` stays `std::function` so options
-  remain copyable.
+  remain copyable. Apple's libc++ still lacks that type; keep the
+  polyfill in the public header rather than dropping macOS.
 - Do not pimpl `TaskHandler`. Adding a member is an ABI break while
   the major version is 0; say so in the changelog rather than paying
   an allocation per handler.

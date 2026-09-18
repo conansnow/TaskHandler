@@ -368,9 +368,10 @@ header-only and compiled builds cannot quietly diverge.
 `benchmarks/task_handler_benchmark.cc` times submission, scheduling and the
 round trips; run it before and after a change to the queue.
 
-The library needs C++23 (GCC 13, Clang 17, MSVC 17.7, or an AppleClang with a
-complete C++23 library) and CMake 3.28. CI also rebuilds everything as C++26, so
-a newer consumer is covered too.
+The library needs C++23 (GCC 13, Clang 17, MSVC 17.7, or AppleClang) and
+CMake 3.28. CI also rebuilds everything as C++26, so a newer consumer is
+covered too. Apple's libc++ still lacks `std::move_only_function`; those
+builds use a small polyfill for the queued callable.
 
 ## Guarantees and limits
 
