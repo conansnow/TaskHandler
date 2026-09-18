@@ -128,14 +128,10 @@ using TaskResultT = std::invoke_result_t<std::decay_t<C> &>;
 // a captured std::unique_ptr) can be queued directly.
 //
 // Apple's libc++ still does not ship P0288R9 (Xcode 26.6 on macos-latest has
-// no std::move_only_function). The queue only needs a move-only void()
-// wrapper, so keep the same call sites -- including assignment from nullptr
-// to destroy the callable -- behind a small polyfill until it does.
-#if defined(__cpp_lib_move_only_function) &&                                   \
-    __cpp_lib_move_only_function >= 202110L
-using Task = std::move_only_function<void()>;
-#else
-class Task {
+// no std::move_only_function). The class is compiled on every toolchain so
+// the Apple path cannot rot behind an #if Linux CI never instantiates; the
+// alias below still prefers the standard type where it exists.
+class MoveOnlyTask {
   struct Impl {
     Impl() = default;
     virtual ~Impl() = default;
@@ -155,26 +151,32 @@ class Task {
   std::unique_ptr<Impl> impl_{};
 
 public:
-  Task() = default;
-  Task(std::nullptr_t) noexcept = default;
-  Task(const Task &) = delete;
-  Task &operator=(const Task &) = delete;
-  Task(Task &&) noexcept = default;
-  Task &operator=(Task &&) noexcept = default;
+  MoveOnlyTask() = default;
+  MoveOnlyTask(std::nullptr_t) noexcept = default;
+  MoveOnlyTask(const MoveOnlyTask &) = delete;
+  MoveOnlyTask &operator=(const MoveOnlyTask &) = delete;
+  MoveOnlyTask(MoveOnlyTask &&) noexcept = default;
+  MoveOnlyTask &operator=(MoveOnlyTask &&) noexcept = default;
 
   template <typename F>
-    requires(!std::same_as<std::decay_t<F>, Task>)
-  Task(F &&callable)
+    requires(!std::same_as<std::decay_t<F>, MoveOnlyTask>)
+  MoveOnlyTask(F &&callable)
       : impl_(std::make_unique<Model<std::decay_t<F>>>(
             std::forward<F>(callable))) {}
 
-  Task &operator=(std::nullptr_t) noexcept {
+  MoveOnlyTask &operator=(std::nullptr_t) noexcept {
     impl_.reset();
     return *this;
   }
 
   void operator()() { impl_->invoke(); }
 };
+
+#if defined(__cpp_lib_move_only_function) &&                                   \
+    __cpp_lib_move_only_function >= 202110L
+using Task = std::move_only_function<void()>;
+#else
+using Task = MoveOnlyTask;
 #endif
 
 // Immediate and delayed Future paths both need a packaged_task that owns the
