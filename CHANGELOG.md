@@ -28,6 +28,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with that binary; 18 will disagree.
 - The vcpkg baseline is current, which pulls GoogleTest 1.18 into the test
   feature. The library itself still has no dependencies.
+- CMake turns off C++ module scanning (`CMAKE_CXX_SCAN_FOR_MODULES`). The
+  library is not modular, and a missing `clang-scan-deps` otherwise breaks
+  `find_package(Threads)` under Clang and CMake 4.
 
 ## [0.3.0]
 

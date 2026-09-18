@@ -88,6 +88,7 @@ jobs:
 
   # The library promises C++23, but consumers are free to be newer than that,
   # and a deprecation or a changed overload set breaks them rather than us.
+  # Clang is used because GCC 13 on ubuntu-latest still rejects -std=c++26.
   standards:
     name: c++${{ matrix.standard }}
     runs-on: ubuntu-latest
@@ -101,6 +102,11 @@ jobs:
 
       - name: Set up vcpkg
         uses: ./.github/actions/setup-build
+
+      - name: Select compiler
+        run: |
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - name: Configure
         run: cmake --preset debug -DCMAKE_CXX_STANDARD=${{ matrix.standard }}

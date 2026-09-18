@@ -13,6 +13,8 @@ cmake_minimum_required(VERSION 4.0)
 
 project(TaskHandlerConsumer LANGUAGES CXX)
 
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 set(TASKHANDLER_CONSUMER_MODE "find_package" CACHE STRING
     "How this project depends on TaskHandler")
 set_property(CACHE TASKHANDLER_CONSUMER_MODE PROPERTY STRINGS

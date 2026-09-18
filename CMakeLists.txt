@@ -22,6 +22,10 @@ if(NOT DEFINED CMAKE_CXX_STANDARD)
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# The library is not modular. CMake 3.28+ otherwise asks clang-scan-deps to
+# scan every TU, and a missing scanner fails try_compile (FindThreads) under
+# Clang with C++20 or newer.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 # The version is spelled out in the public header as well, because a
 # header-only consumer has no CMake project to ask. Checking them against each
