@@ -86,15 +86,15 @@ jobs:
         if: matrix.name == 'linux-gcc-release'
         run: ./out/build/release/benchmarks/task_handler_benchmark
 
-  # The library only promises C++17, but consumers are free to be newer than
-  # that, and a deprecation or a changed overload set breaks them rather than us.
+  # The library promises C++23, but consumers are free to be newer than that,
+  # and a deprecation or a changed overload set breaks them rather than us.
   standards:
     name: c++${{ matrix.standard }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        standard: [20, 23]
+        standard: [26]
 
     steps:
       - uses: actions/checkout@v7
@@ -210,14 +210,19 @@ jobs:
       # Pinned: clang-format's output drifts between major versions, so an
       # unpinned runner upgrade would fail this job on untouched code.
       - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format-18
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget lsb-release software-properties-common gnupg
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh 23
+          sudo apt-get install -y clang-format-23
 
       # Driven off git rather than a list of directories, so a source file in a
       # directory nobody remembered to add here cannot escape the check.
       - name: Check formatting
         run: |
-          clang-format-18 --version
-          clang-format-18 --dry-run --Werror $(git ls-files '*.h' '*.cc')
+          clang-format-23 --version
+          clang-format-23 --dry-run --Werror $(git ls-files '*.h' '*.cc')
 
   tidy:
     name: clang-tidy
@@ -235,7 +240,10 @@ jobs:
       - name: Install clang-tidy
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-tidy-18 libstdc++-14-dev
+          sudo apt-get install -y wget lsb-release software-properties-common gnupg
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh 23
+          sudo apt-get install -y clang-tidy-23 libstdc++-14-dev
 
       - name: Configure
         run: cmake --preset debug
@@ -247,7 +255,7 @@ jobs:
       # it this job only ever caught a translation unit that would not compile.
       - name: Run clang-tidy
         run: |
-          clang-tidy-18 --version
-          clang-tidy-18 -p out/build/debug --warnings-as-errors='*' \
+          clang-tidy-23 --version
+          clang-tidy-23 -p out/build/debug --warnings-as-errors='*' \
             src/task_handler.cc examples/basic.cc \
             benchmarks/task_handler_benchmark.cc

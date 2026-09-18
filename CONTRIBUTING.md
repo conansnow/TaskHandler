@@ -29,8 +29,8 @@ Run what CI runs, or as much of it as your platform can:
 ctest --preset debug
 ctest --preset asan
 TSAN_OPTIONS=halt_on_error=1 ctest --preset tsan --repeat until-fail:20
-clang-format-18 --dry-run --Werror $(git ls-files '*.h' '*.cc')
-clang-tidy-18 -p out/build/debug --warnings-as-errors='*' \
+clang-format-23 --dry-run --Werror $(git ls-files '*.h' '*.cc')
+clang-tidy-23 -p out/build/debug --warnings-as-errors='*' \
     src/task_handler.cc examples/basic.cc benchmarks/task_handler_benchmark.cc
 ```
 
@@ -53,7 +53,7 @@ cmake -S ci/consumer -B out/consumer-find-package -G Ninja \
 cmake --build out/consumer-find-package
 ```
 
-`clang-format` and `clang-tidy` are pinned to major version 18 because their
+`clang-format` and `clang-tidy` are pinned to major version 23 because their
 output drifts between releases; a different version may disagree with CI.
 
 ## What a change comes with

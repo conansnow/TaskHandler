@@ -1,6 +1,6 @@
 # TaskHandler
 
-A small single-worker task queue for C++17.
+A small single-worker task queue for C++23.
 
 Every handler owns exactly one thread, and everything submitted to that handler
 runs on it, one task at a time. That is what makes it useful as an event
@@ -367,7 +367,8 @@ header-only and compiled builds cannot quietly diverge.
 `benchmarks/task_handler_benchmark.cc` times submission, scheduling and the
 round trips; run it before and after a change to the queue.
 
-The library needs C++17, and CI also rebuilds everything as C++20 and C++23, so
+The library needs C++23 (GCC 13, Clang 17, MSVC 17.7, or an AppleClang with a
+complete C++23 library) and CMake 4.0. CI also rebuilds everything as C++26, so
 a newer consumer is covered too.
 
 ## Guarantees and limits

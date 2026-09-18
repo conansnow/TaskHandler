@@ -11,6 +11,7 @@
 #endif
 
 #include <array>
+#include <format>
 #include <map>
 #include <string>
 #include <utility>
@@ -110,18 +111,18 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
 
     if (!ready_.empty()) {
       auto next = ready_.begin();
-      std::unique_ptr<detail::Task> task = std::move(next->second);
+      detail::Task task = std::move(next->second);
       ready_.erase(next);
       busy_ = true;
 
       lock.unlock();
       try {
-        task->run();
+        task();
       } catch (...) {
         report_exception(std::current_exception());
       }
       try {
-        task.reset();
+        task = nullptr;
       } catch (...) {
         report_exception(std::current_exception());
       }
@@ -168,7 +169,8 @@ TaskHandler::promote_due_timers(std::chrono::steady_clock::time_point now) {
     auto due = timed_.begin();
     // Keeping the original sequence number means a task stays cancellable
     // across the move from the timer queue to the runnable queue.
-    ready_.emplace(detail::ReadyKey{due->second.priority, due->first.sequence},
+    ready_.emplace(detail::ReadyKey{.priority = due->second.priority,
+                                    .sequence = due->first.sequence},
                    std::move(due->second.task));
     timed_.erase(due);
   }
@@ -182,8 +184,7 @@ TASKHANDLER_INLINE void TaskHandler::ensure_accepting() const {
     throw TaskHandlerQueueFull{};
 }
 
-TASKHANDLER_INLINE TaskId
-TaskHandler::submit(std::unique_ptr<detail::Task> task, int priority) {
+TASKHANDLER_INLINE TaskId TaskHandler::submit(detail::Task task, int priority) {
   TaskId id;
   {
     std::lock_guard<std::mutex> lock{mutex_};
@@ -192,14 +193,16 @@ TaskHandler::submit(std::unique_ptr<detail::Task> task, int priority) {
     id.kind_ = TaskId::Kind::ready;
     id.priority_ = priority;
     id.sequence_ = ++sequence_;
-    ready_.emplace(detail::ReadyKey{priority, id.sequence_}, std::move(task));
+    ready_.emplace(
+        detail::ReadyKey{.priority = priority, .sequence = id.sequence_},
+        std::move(task));
   }
   work_cv_.notify_one();
   return id;
 }
 
 TASKHANDLER_INLINE TaskId
-TaskHandler::submit_at(std::unique_ptr<detail::Task> task, int priority,
+TaskHandler::submit_at(detail::Task task, int priority,
                        std::chrono::steady_clock::time_point deadline) {
   TaskId id;
   {
@@ -210,8 +213,9 @@ TaskHandler::submit_at(std::unique_ptr<detail::Task> task, int priority,
     id.priority_ = priority;
     id.sequence_ = ++sequence_;
     id.deadline_ = deadline;
-    timed_.emplace(detail::TimerKey{deadline, id.sequence_},
-                   detail::TimerEntry{priority, std::move(task)});
+    timed_.emplace(
+        detail::TimerKey{.deadline = deadline, .sequence = id.sequence_},
+        detail::TimerEntry{.priority = priority, .task = std::move(task)});
   }
   // Notified unconditionally: the new deadline may be earlier than the one the
   // worker is currently sleeping on, in which case it has to re-arm.
@@ -225,10 +229,12 @@ TASKHANDLER_INLINE bool TaskHandler::cancel(const TaskId &id) {
 
   std::lock_guard<std::mutex> lock{mutex_};
   if (id.kind_ == TaskId::Kind::timed &&
-      timed_.erase(detail::TimerKey{id.deadline_, id.sequence_}) != 0)
+      timed_.erase(detail::TimerKey{.deadline = id.deadline_,
+                                    .sequence = id.sequence_}) != 0)
     return true;
 
-  return ready_.erase(detail::ReadyKey{id.priority_, id.sequence_}) != 0;
+  return ready_.erase(detail::ReadyKey{.priority = id.priority_,
+                                       .sequence = id.sequence_}) != 0;
 }
 
 TASKHANDLER_INLINE std::size_t TaskHandler::pending() const {
@@ -337,7 +343,7 @@ private:
   TaskHandler *create(std::size_t index) {
     if (handlers_[index] == nullptr) {
       TaskHandlerOptions options;
-      options.thread_name = "conan-task-" + std::to_string(index);
+      options.thread_name = std::format("conan-task-{}", index);
       // Deliberately never freed. A reference handed out by instance() has to
       // stay valid for the rest of the program, including while other static
       // objects are running their destructors, so the handlers outlive this

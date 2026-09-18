@@ -9,7 +9,7 @@
 # calling it, and it is the mode that catches a project that quietly builds its
 # own tests or install rules inside somebody else's build.
 
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 4.0)
 
 project(TaskHandlerConsumer LANGUAGES CXX)
 

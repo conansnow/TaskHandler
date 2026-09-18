@@ -53,7 +53,7 @@ body:
     id: toolchain
     attributes:
       label: Platform and toolchain
-      placeholder: Ubuntu 24.04, GCC 13.3, C++17, Debug
+      placeholder: Ubuntu 24.04, GCC 13.3, C++23, Debug
     validations:
       required: true
 

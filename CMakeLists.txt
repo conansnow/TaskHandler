@@ -1,8 +1,8 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 4.0)
 
 project(TaskHandler
     VERSION 0.3.0
-    DESCRIPTION "A small single-worker task queue and event handler for C++17"
+    DESCRIPTION "A small single-worker task queue and event handler for C++23"
     HOMEPAGE_URL "https://github.com/conansnow/TaskHandler"
     LANGUAGES CXX
     )
@@ -13,12 +13,12 @@ option(TASKHANDLER_BUILD_BENCHMARKS "Build the TaskHandler benchmarks" ${PROJECT
 option(TASKHANDLER_INSTALL "Generate the TaskHandler install rules" ${PROJECT_IS_TOP_LEVEL})
 option(TASKHANDLER_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
-# The library needs C++17 and says so through target_compile_features, so this
+# The library needs C++23 and says so through target_compile_features, so this
 # only picks the standard the project's own tests, examples and benchmarks are
-# built with. Left overridable so that CI can rebuild the whole thing as C++20
-# or C++23 and catch anything a future standard breaks for consumers.
+# built with. Left overridable so that CI can rebuild the whole thing as C++26
+# and catch anything a future standard breaks for consumers.
 if(NOT DEFINED CMAKE_CXX_STANDARD)
-    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD 23)
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -87,7 +87,7 @@ add_library(TaskHandler::header_only ALIAS task_handler_header_only)
 # TaskHandler::task_handler_header_only, so the name would differ depending on
 # whether the project is consumed from the build tree or from an install.
 set_target_properties(task_handler_header_only PROPERTIES EXPORT_NAME header_only)
-target_compile_features(task_handler_header_only INTERFACE cxx_std_17)
+target_compile_features(task_handler_header_only INTERFACE cxx_std_23)
 target_include_directories(task_handler_header_only INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -101,7 +101,7 @@ add_library(task_handler src/task_handler.cc ${TASKHANDLER_HEADERS})
 add_library(TaskHandler::task_handler ALIAS task_handler)
 taskhandler_set_warnings(task_handler)
 
-target_compile_features(task_handler PUBLIC cxx_std_17)
+target_compile_features(task_handler PUBLIC cxx_std_23)
 target_include_directories(task_handler PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>

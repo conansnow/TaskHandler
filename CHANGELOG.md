@@ -6,6 +6,29 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- The library now requires C++23 and CMake 4.0. Rebuild consumers with a
+  toolchain that can do both; GCC 13, Clang 17, MSVC 17.7 and AppleClang with a
+  complete C++23 library are the floor CI actually runs. `CMAKE_CXX_STANDARD`
+  still defaults to 23 and is still overridable, so CI rebuilds as C++26 to
+  catch anything a newer consumer would hit.
+- Submission overloads are constrained with concepts (`QueuedPolicy`,
+  `BlockedPolicy`, `FuturePolicy`, `TaskCallable`) rather than
+  `std::enable_if`. Call sites that already passed a policy tag and an
+  invocable do not change. The `detail::is_*_v` traits are gone.
+- Queued work is stored as `std::move_only_function<void()>` instead of
+  `std::unique_ptr<detail::Task>`. That is an ABI break for the compiled
+  library; rebuild against the matching header. `TaskHandlerOptions::on_exception`
+  is still `std::function`, so options stay copyable.
+
+### Changed
+
+- `clang-format` and `clang-tidy` are pinned to major version 23. Reformat
+  with that binary; 18 will disagree.
+- The vcpkg baseline is current, which pulls GoogleTest 1.18 into the test
+  feature. The library itself still has no dependencies.
+
 ## [0.3.0]
 
 ### Breaking

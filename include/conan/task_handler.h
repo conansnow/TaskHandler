@@ -64,6 +64,7 @@
 #endif
 
 #include <chrono>
+#include <concepts>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -71,7 +72,6 @@
 #include <functional>
 #include <future>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -95,55 +95,30 @@ struct Future {};
 
 namespace detail {
 
-template <typename> struct IsQueued : std::false_type {};
-template <> struct IsQueued<Queued> : std::true_type {};
-template <typename T> inline constexpr bool is_queued_v = IsQueued<T>::value;
+template <typename T>
+concept QueuedPolicy = std::same_as<T, Queued>;
 
-template <typename> struct IsBlocked : std::false_type {};
-template <> struct IsBlocked<Blocked> : std::true_type {};
-template <typename T> inline constexpr bool is_blocked_v = IsBlocked<T>::value;
+template <typename T>
+concept BlockedPolicy = std::same_as<T, Blocked>;
 
-template <typename> struct IsFuture : std::false_type {};
-template <> struct IsFuture<Future> : std::true_type {};
-template <typename T> inline constexpr bool is_future_v = IsFuture<T>::value;
+template <typename T>
+concept FuturePolicy = std::same_as<T, Future>;
 
 // The callable as the queue stores it: an lvalue of the decayed type, which is
-// how std::packaged_task and TaskImpl below invoke it.
-template <typename C> using CallableRef = std::decay_t<C> &;
+// how std::packaged_task and the stored move_only_function invoke it.
+template <typename C>
+concept TaskCallable = std::invocable<std::decay_t<C> &>;
 
 template <typename C>
-inline constexpr bool is_task_v = std::is_invocable_v<CallableRef<C>>;
-
-template <typename C> using TaskResultT = std::invoke_result_t<CallableRef<C>>;
+using TaskResultT = std::invoke_result_t<std::decay_t<C> &>;
 
 // Type-erased nullary task. Unlike std::function this never requires the
 // callable to be copy-constructible, so move-only state (a std::packaged_task,
 // a captured std::unique_ptr) can be queued directly.
-class TASKHANDLER_VISIBLE Task {
-public:
-  Task() = default;
-  virtual ~Task() = default;
-  Task(const Task &) = delete;
-  Task &operator=(const Task &) = delete;
-  Task(Task &&) = delete;
-  Task &operator=(Task &&) = delete;
+using Task = std::move_only_function<void()>;
 
-  virtual void run() = 0;
-};
-
-template <typename C> class TaskImpl final : public Task {
-public:
-  explicit TaskImpl(C callable) : callable_{std::move(callable)} {}
-
-  void run() override { callable_(); }
-
-private:
-  C callable_;
-};
-
-template <typename C> std::unique_ptr<Task> make_task(C &&callable) {
-  return std::unique_ptr<Task>{
-      new TaskImpl<std::decay_t<C>>{std::forward<C>(callable)}};
+template <typename C> Task make_task(C &&callable) {
+  return Task{std::forward<C>(callable)};
 }
 
 // Ordering of runnable tasks: higher priority first, and within one priority
@@ -173,7 +148,7 @@ inline bool operator<(const TimerKey &lhs, const TimerKey &rhs) noexcept {
 
 struct TimerEntry {
   int priority{0};
-  std::unique_ptr<Task> task{};
+  Task task{};
 };
 
 } // namespace detail
@@ -216,11 +191,6 @@ public:
                                        const TaskId &rhs) noexcept {
     return lhs.kind_ == rhs.kind_ && lhs.priority_ == rhs.priority_ &&
            lhs.sequence_ == rhs.sequence_ && lhs.deadline_ == rhs.deadline_;
-  }
-
-  [[nodiscard]] friend bool operator!=(const TaskId &lhs,
-                                       const TaskId &rhs) noexcept {
-    return !(lhs == rhs);
   }
 
 private:
@@ -272,25 +242,19 @@ public:
 
   // Submits `callable` and returns immediately. Exceptions escaping the task
   // are reported to TaskHandlerOptions::on_exception and otherwise discarded.
-  template <typename T = Queued, typename C,
-            std::enable_if_t<detail::is_queued_v<T>, int> = 0,
-            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  template <detail::QueuedPolicy T = Queued, detail::TaskCallable C>
   TaskId add_callable(C &&callable, int priority = 0);
 
   // Submits `callable` and blocks until it has run, rethrowing whatever it
   // threw. Called from the handler's own worker thread it runs the task inline
   // instead of deadlocking, which is what makes recursive use safe.
-  template <typename T, typename C,
-            std::enable_if_t<detail::is_blocked_v<T>, int> = 0,
-            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  template <detail::BlockedPolicy T, detail::TaskCallable C>
   void add_callable(C &&callable, int priority = 0);
 
   // Submits `callable` and returns a future for its result. The future is
   // typed: a task returning int yields std::future<int>, and move-only results
   // such as std::unique_ptr work.
-  template <typename T, typename C,
-            std::enable_if_t<detail::is_future_v<T>, int> = 0,
-            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  template <detail::FuturePolicy T, detail::TaskCallable C>
   std::future<detail::TaskResultT<C>> add_callable(C &&callable,
                                                    int priority = 0);
 
@@ -300,28 +264,22 @@ public:
   // work is never run inline, even when already on the worker: getting a
   // delayed Future from that thread would wait for a task that cannot start
   // until the current one returns.
-  template <typename T = Queued, typename Rep, typename Period, typename C,
-            std::enable_if_t<detail::is_queued_v<T>, int> = 0,
-            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  template <detail::QueuedPolicy T = Queued, typename Rep, typename Period,
+            detail::TaskCallable C>
   TaskId add_callable_after(std::chrono::duration<Rep, Period> delay,
                             C &&callable, int priority = 0);
 
-  template <typename T, typename Rep, typename Period, typename C,
-            std::enable_if_t<detail::is_future_v<T>, int> = 0,
-            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  template <detail::FuturePolicy T, typename Rep, typename Period,
+            detail::TaskCallable C>
   std::future<detail::TaskResultT<C>>
   add_callable_after(std::chrono::duration<Rep, Period> delay, C &&callable,
                      int priority = 0);
 
-  template <typename T = Queued, typename C,
-            std::enable_if_t<detail::is_queued_v<T>, int> = 0,
-            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  template <detail::QueuedPolicy T = Queued, detail::TaskCallable C>
   TaskId add_callable_at(std::chrono::steady_clock::time_point deadline,
                          C &&callable, int priority = 0);
 
-  template <typename T, typename C,
-            std::enable_if_t<detail::is_future_v<T>, int> = 0,
-            std::enable_if_t<detail::is_task_v<C>, int> = 0>
+  template <detail::FuturePolicy T, detail::TaskCallable C>
   std::future<detail::TaskResultT<C>>
   add_callable_at(std::chrono::steady_clock::time_point deadline, C &&callable,
                   int priority = 0);
@@ -386,8 +344,8 @@ public:
   static void uninit();
 
 private:
-  TaskId submit(std::unique_ptr<detail::Task> task, int priority);
-  TaskId submit_at(std::unique_ptr<detail::Task> task, int priority,
+  TaskId submit(detail::Task task, int priority);
+  TaskId submit_at(detail::Task task, int priority,
                    std::chrono::steady_clock::time_point deadline);
   // Both submission paths share one set of accept-or-refuse rules. Call with
   // mutex_ held; throws rather than returning a code so that the refusal
@@ -407,7 +365,7 @@ private:
   std::condition_variable work_cv_{};
   std::condition_variable idle_cv_{};
 
-  std::map<detail::ReadyKey, std::unique_ptr<detail::Task>> ready_{};
+  std::map<detail::ReadyKey, detail::Task> ready_{};
   std::map<detail::TimerKey, detail::TimerEntry> timed_{};
 
   std::uint64_t sequence_{0};
@@ -421,15 +379,12 @@ private:
   std::thread thread_{};
 };
 
-template <typename T, typename C, std::enable_if_t<detail::is_queued_v<T>, int>,
-          std::enable_if_t<detail::is_task_v<C>, int>>
+template <detail::QueuedPolicy T, detail::TaskCallable C>
 TaskId TaskHandler::add_callable(C &&callable, int priority) {
   return submit(detail::make_task(std::forward<C>(callable)), priority);
 }
 
-template <typename T, typename C,
-          std::enable_if_t<detail::is_blocked_v<T>, int>,
-          std::enable_if_t<detail::is_task_v<C>, int>>
+template <detail::BlockedPolicy T, detail::TaskCallable C>
 // The callable is deliberately not forwarded: this overload blocks until the
 // task has run, so the task borrows the caller's object instead of owning it.
 // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
@@ -461,8 +416,7 @@ void TaskHandler::add_callable(C &&callable, int priority) {
   future.get();
 }
 
-template <typename T, typename C, std::enable_if_t<detail::is_future_v<T>, int>,
-          std::enable_if_t<detail::is_task_v<C>, int>>
+template <detail::FuturePolicy T, detail::TaskCallable C>
 std::future<detail::TaskResultT<C>> TaskHandler::add_callable(C &&callable,
                                                               int priority) {
   // The task outlives this call, so it has to own the callable rather than
@@ -482,18 +436,16 @@ std::future<detail::TaskResultT<C>> TaskHandler::add_callable(C &&callable,
   return future;
 }
 
-template <typename T, typename Rep, typename Period, typename C,
-          std::enable_if_t<detail::is_queued_v<T>, int>,
-          std::enable_if_t<detail::is_task_v<C>, int>>
+template <detail::QueuedPolicy T, typename Rep, typename Period,
+          detail::TaskCallable C>
 TaskId TaskHandler::add_callable_after(std::chrono::duration<Rep, Period> delay,
                                        C &&callable, int priority) {
   return add_callable_at<Queued>(std::chrono::steady_clock::now() + delay,
                                  std::forward<C>(callable), priority);
 }
 
-template <typename T, typename Rep, typename Period, typename C,
-          std::enable_if_t<detail::is_future_v<T>, int>,
-          std::enable_if_t<detail::is_task_v<C>, int>>
+template <detail::FuturePolicy T, typename Rep, typename Period,
+          detail::TaskCallable C>
 std::future<detail::TaskResultT<C>>
 TaskHandler::add_callable_after(std::chrono::duration<Rep, Period> delay,
                                 C &&callable, int priority) {
@@ -501,8 +453,7 @@ TaskHandler::add_callable_after(std::chrono::duration<Rep, Period> delay,
                                  std::forward<C>(callable), priority);
 }
 
-template <typename T, typename C, std::enable_if_t<detail::is_queued_v<T>, int>,
-          std::enable_if_t<detail::is_task_v<C>, int>>
+template <detail::QueuedPolicy T, detail::TaskCallable C>
 TaskId
 TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
                              C &&callable, int priority) {
@@ -510,8 +461,7 @@ TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
                    deadline);
 }
 
-template <typename T, typename C, std::enable_if_t<detail::is_future_v<T>, int>,
-          std::enable_if_t<detail::is_task_v<C>, int>>
+template <detail::FuturePolicy T, detail::TaskCallable C>
 std::future<detail::TaskResultT<C>>
 TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
                              C &&callable, int priority) {

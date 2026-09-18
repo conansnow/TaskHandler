@@ -7,7 +7,7 @@ This file is for coding agents. Humans should start at
 
 ## What this is
 
-TaskHandler is a serial executor for C++17: one worker thread per
+TaskHandler is a serial executor for C++23: one worker thread per
 handler, one task at a time, in a defined order. State owned by a
 handler needs no locking, because only its worker ever touches it.
 
@@ -54,13 +54,13 @@ What CI also runs, for a change to the queue or the lifecycle:
 ```sh
 ctest --preset asan
 TSAN_OPTIONS=halt_on_error=1 ctest --preset tsan --repeat until-fail:20
-clang-format-18 --dry-run --Werror $(git ls-files '*.h' '*.cc')
-clang-tidy-18 -p out/build/debug --warnings-as-errors='*' \
+clang-format-23 --dry-run --Werror $(git ls-files '*.h' '*.cc')
+clang-tidy-23 -p out/build/debug --warnings-as-errors='*' \
     src/task_handler.cc examples/basic.cc \
     benchmarks/task_handler_benchmark.cc
 ```
 
-clang-format and clang-tidy are pinned to major version 18 because
+clang-format and clang-tidy are pinned to major version 23 because
 their output drifts. A different version may disagree with CI; do
 not reformat the tree with an unpinned binary.
 
@@ -125,9 +125,11 @@ naming. Beyond that:
   or a bug the next reader would otherwise rediscover.
 - Public declarations are documented where they are declared, in
   `include/conan/task_handler.h`.
-- Prefer `std::unique_ptr<detail::Task>` over `std::function`. The
-  latter requires copy-constructible targets and would reject a
-  lambda that captured a `std::unique_ptr`.
+- Prefer `std::move_only_function<void()>` over `std::function` for
+  queued work. The latter requires copy-constructible targets and
+  would reject a lambda that captured a `std::unique_ptr`.
+  `TaskHandlerOptions::on_exception` stays `std::function` so options
+  remain copyable.
 - Do not pimpl `TaskHandler`. Adding a member is an ABI break while
   the major version is 0; say so in the changelog rather than paying
   an allocation per handler.
@@ -142,8 +144,8 @@ naming. Beyond that:
 - Exceptions thrown across the shared-object boundary need
   `TASKHANDLER_VISIBLE`. Hidden visibility is on for the compiled
   library on purpose.
-- Stay on C++17 in the library itself. CI also rebuilds as C++20 and
-  C++23, so do not rely on a newer overload set by accident.
+- Stay on C++23 in the library itself. CI also rebuilds as C++26,
+  so do not rely on a newer overload set by accident.
 
 ## Testing
 
@@ -191,10 +193,10 @@ issue. See [SECURITY.md](SECURITY.md).
 There is no application to launch and no browser flow to click
 through. Verify with the CMake presets and `ctest`.
 
-The environment needs CMake 3.22 or newer, Ninja, a C++17 compiler,
+The environment needs CMake 4.0 or newer, Ninja, a C++23 compiler,
 and `VCPKG_ROOT` pointing at a vcpkg checkout. Every preset sets
 `VCPKG_MANIFEST_FEATURES=tests`. clang-format and clang-tidy, when
-used, must be major version 18.
+used, must be major version 23.
 
 Build trees belong under `out/` and are gitignored. Do not commit
 them.

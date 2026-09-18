@@ -120,10 +120,11 @@ caller until the deadline.
 it is sound only because the function does not return until the task has run.
 `Future` must own it: the future outlives the call.
 
-Tasks are stored as `std::unique_ptr<detail::Task>`, a small move-only
-type-erased base, rather than `std::function`. `std::function` requires its
-target to be copy-constructible, which would reject a lambda that captured a
-`std::unique_ptr` -- exactly the shape a queued task usually has.
+Tasks are stored as `std::move_only_function<void()>`, rather than
+`std::function`. `std::function` requires its target to be copy-constructible,
+which would reject a lambda that captured a `std::unique_ptr` -- exactly the
+shape a queued task usually has. The exception hook on `TaskHandlerOptions`
+stays `std::function` so the options struct remains copyable.
 
 `Blocked` and `Future` check `is_current_thread()` and run the task inline when
 they are already on the worker. Queueing there would wait on a task that cannot

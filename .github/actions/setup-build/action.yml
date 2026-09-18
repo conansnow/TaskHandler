@@ -1,11 +1,24 @@
 name: Set up vcpkg
 description: >
-  Bootstrap vcpkg, restore its binary cache from actions/cache, and put MSVC
-  on PATH on Windows so the Ninja presets can find cl.exe.
+  Install CMake 4.4.3, bootstrap vcpkg, restore its binary cache from
+  actions/cache, and put MSVC on PATH on Windows so the Ninja presets
+  can find cl.exe.
 
 runs:
   using: composite
   steps:
+    # ubuntu-latest still ships CMake 3.28; the project requires 4.0.
+    # Pin the patch so a PyPI upload cannot silently change the job.
+    - name: Install CMake 4.4.3
+      shell: bash
+      run: |
+        PY=python3
+        command -v python3 >/dev/null 2>&1 || PY=python
+        "$PY" -m pip install --user 'cmake==4.4.3'
+        CMAKE_BIN="$("$PY" -c 'import cmake, pathlib; print(pathlib.Path(cmake.CMAKE_BIN_DIR))')"
+        echo "$CMAKE_BIN" >> "$GITHUB_PATH"
+        "$CMAKE_BIN/cmake" --version
+
     - name: Set up vcpkg
       uses: lukka/run-vcpkg@v11
       with:

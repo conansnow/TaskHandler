@@ -174,6 +174,20 @@ TEST(task_handler, accepts_move_only_callables) {
   EXPECT_EQ(kNum, done_future.get());
 }
 
+TEST(task_handler, blocked_and_future_accept_move_only_callables) {
+  auto owned = std::make_unique<int>(kNum);
+  int value{};
+  TaskHandler::instance().add_callable<Blocked>(
+      [&value, owned = std::move(owned)] { value = *owned; });
+  EXPECT_EQ(kNum, value);
+
+  auto owned_future = std::make_unique<int>(kNum);
+  std::future<int> future_tmp = TaskHandler::instance().add_callable<Future>(
+      [owned_future = std::move(owned_future)] { return *owned_future; });
+  ASSERT_EQ(std::future_status::ready, future_tmp.wait_for(kTimeout));
+  EXPECT_EQ(kNum, future_tmp.get());
+}
+
 TEST(task_handler, future_callable_outlives_caller_frame) {
   Gate gate{TaskHandler::instance()};
   auto future_tmp = submit_from_dead_frame();
