@@ -59,6 +59,7 @@ void tour() {
     handler.add_callable([applied, result] { applied->set_value(result); });
   });
   std::cout << "  applied=" << applied->get_future().get() << '\n';
+  pool.flush();
 
   std::cout << "Backpressure: a bounded pool refuses work\n";
   {

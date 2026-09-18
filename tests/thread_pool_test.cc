@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <future>
 #include <memory>
 #include <stdexcept>
@@ -50,6 +51,8 @@ public:
     }
   }
 
+  // Releasing from the destructor keeps a failed ASSERT from leaving a
+  // worker parked forever and hanging every later test.
   ~Gate() { release(); }
 
   Gate(const Gate &) = delete;
@@ -73,6 +76,21 @@ struct Payload {
   std::string s{"payload"};
 };
 
+// The returned task outlives this frame, so it must own its callable. A Future
+// task that captured the caller's lambda by reference would read a temporary
+// that has already gone away.
+std::future<int> submit_from_dead_frame(ThreadPool &pool) {
+  Payload payload;
+  return pool.add_callable<Future>(
+      [payload] { return payload.a + payload.b + int(payload.s.size()); });
+}
+
+void clobber_stack() {
+  volatile char junk[2048];
+  for (std::size_t i = 0; i < sizeof(junk); i++)
+    junk[i] = char(0x7F);
+}
+
 void wait_until_not_running(ThreadPool &pool) {
   const auto deadline = std::chrono::steady_clock::now() + kTimeout;
   while (pool.running() && std::chrono::steady_clock::now() < deadline)
@@ -84,6 +102,22 @@ ThreadPoolOptions pool_options(std::size_t thread_count) {
   options.thread_count = thread_count;
   return options;
 }
+
+// Runs `on_destroy` from a task destructor without holding the library mutex.
+struct Touch {
+  Touch(ThreadPool *owner, std::shared_ptr<std::atomic_bool> done,
+        std::function<void(ThreadPool &)> fn)
+      : pool{owner}, flag{std::move(done)}, on_destroy{std::move(fn)} {}
+  ThreadPool *pool{};
+  std::shared_ptr<std::atomic_bool> flag;
+  std::function<void(ThreadPool &)> on_destroy;
+  ~Touch() {
+    if (pool == nullptr || !flag)
+      return;
+    on_destroy(*pool);
+    *flag = true;
+  }
+};
 
 #if defined(__linux__)
 std::string current_thread_name() {
@@ -165,6 +199,17 @@ TEST(thread_pool, blocked_and_future_accept_move_only_callables) {
       [owned_future = std::move(owned_future)] { return *owned_future; });
   ASSERT_EQ(std::future_status::ready, future_tmp.wait_for(kTimeout));
   EXPECT_EQ(kNum, future_tmp.get());
+}
+
+TEST(thread_pool, future_callable_outlives_caller_frame) {
+  ThreadPool pool{pool_options(1)};
+  Gate gate{pool};
+  auto future_tmp = submit_from_dead_frame(pool);
+  clobber_stack();
+  gate.release();
+
+  ASSERT_EQ(std::future_status::ready, future_tmp.wait_for(kTimeout));
+  EXPECT_EQ(0x11111111 + 0x22222222 + 7, future_tmp.get());
 }
 
 TEST(thread_pool, two_workers_run_two_tasks_concurrently) {
@@ -339,6 +384,40 @@ TEST(thread_pool, exception_hook_failure_does_not_kill_the_worker) {
   EXPECT_EQ(kNum, num_tmp);
 }
 
+TEST(thread_pool, exception_hook_handles_concurrent_queued_failures) {
+  auto hook_calls = std::make_shared<std::atomic_int>(0);
+
+  ThreadPoolOptions options;
+  options.thread_count = 2;
+  options.on_exception = [hook_calls](std::exception_ptr) { ++*hook_calls; };
+  ThreadPool pool{std::move(options)};
+
+  auto entered0 = std::make_shared<std::promise<void>>();
+  auto entered1 = std::make_shared<std::promise<void>>();
+  auto release = std::make_shared<std::promise<void>>();
+  auto entered0_future = entered0->get_future();
+  auto entered1_future = entered1->get_future();
+  std::shared_future<void> released = release->get_future().share();
+
+  pool.add_callable([entered0, released] {
+    entered0->set_value();
+    released.wait();
+  });
+  pool.add_callable([entered1, released] {
+    entered1->set_value();
+    released.wait();
+  });
+
+  ASSERT_EQ(std::future_status::ready, entered0_future.wait_for(kTimeout));
+  ASSERT_EQ(std::future_status::ready, entered1_future.wait_for(kTimeout));
+
+  pool.add_callable([] { throw std::runtime_error("a"); });
+  pool.add_callable([] { throw std::runtime_error("b"); });
+  release->set_value();
+  pool.flush();
+  EXPECT_EQ(2, hook_calls->load());
+}
+
 TEST(thread_pool, max_pending_refuses_work_instead_of_growing) {
   ThreadPoolOptions options;
   options.thread_count = 1;
@@ -350,6 +429,7 @@ TEST(thread_pool, max_pending_refuses_work_instead_of_growing) {
   pool.add_callable([] {});
   EXPECT_EQ(2U, pool.pending());
   EXPECT_THROW(pool.add_callable([] {}), ThreadPoolQueueFull);
+  EXPECT_THROW(pool.add_callable<Blocked>([] {}), ThreadPoolQueueFull);
   EXPECT_THROW(pool.add_callable<Future>([] { return kNum; }),
                ThreadPoolQueueFull);
   gate.release();
@@ -491,6 +571,69 @@ TEST(thread_pool, shutdown_drains_queued_work) {
   gate.release();
   pool.stop();
   EXPECT_EQ(kCount, ran->load());
+}
+
+TEST(thread_pool, destruction_drains_queued_work) {
+  auto ran = std::make_shared<std::atomic_int>(0);
+  {
+    ThreadPool pool{pool_options(1)};
+    Gate gate{pool};
+    for (int i = 0; i < 16; i++)
+      pool.add_callable([ran] { ++*ran; });
+    ASSERT_EQ(0, ran->load()) << "tasks should still be queued behind the gate";
+    gate.release();
+  }
+  EXPECT_EQ(16, ran->load());
+}
+
+TEST(thread_pool, stop_unblocks_a_blocked_caller) {
+  ThreadPool pool{pool_options(1)};
+  Gate gate{pool};
+  auto ran = std::make_shared<std::atomic_bool>(false);
+
+  std::thread waiter([&pool, ran] {
+    pool.add_callable<Blocked>([ran] { *ran = true; });
+  });
+
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (pool.pending() == 0 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const std::size_t queued = pool.pending();
+
+  gate.release();
+  pool.stop();
+  waiter.join();
+  EXPECT_EQ(1U, queued);
+  EXPECT_TRUE(ran->load());
+}
+
+TEST(thread_pool, one_worker_runs_queued_tasks_in_submission_order) {
+  ThreadPool pool{pool_options(1)};
+  auto order = std::make_shared<std::vector<int>>();
+  Gate gate{pool};
+  for (int i = 0; i < 8; i++)
+    pool.add_callable([order, i] { order->push_back(i); });
+  gate.release();
+  pool.flush();
+  EXPECT_EQ((std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7}), *order);
+}
+
+TEST(thread_pool, task_destructor_can_reenter_the_pool) {
+  ThreadPool pool{pool_options(1)};
+  auto reentered = std::make_shared<std::atomic_bool>(false);
+  auto on_worker = std::make_shared<std::atomic_bool>(false);
+
+  pool.add_callable([touch = std::make_shared<Touch>(
+                         &pool, reentered,
+                         [on_worker](ThreadPool &owner) {
+                           *on_worker = owner.is_worker_thread();
+                           (void)owner.pending();
+                           owner.start();
+                           owner.stop();
+                         })] { (void)touch; });
+  pool.flush();
+  EXPECT_TRUE(reentered->load());
+  EXPECT_TRUE(on_worker->load());
 }
 
 TEST(thread_pool, concurrent_producers_all_complete) {

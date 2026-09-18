@@ -58,6 +58,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Immediate and delayed `Future` paths share one `packaged_task` helper, and
   the leftover `detail::make_task` wrapper is gone. No API change.
 - The worker loop names its run and timer-discard phases. No API change.
+- `ThreadPoolOptions::on_exception` may run on several workers at once. The
+  hook must be safe for that, or the caller must synchronize it; the library
+  does not serialize it.
 
 ### Fixed
 
@@ -79,6 +82,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that type so macOS debug, release and consume jobs build.
 - clang-tidy 23 rejected the leaked instance registry for
   `modernize-use-auto`. The pointer is now `auto *`.
+- `ThreadPool::start()` left `stop_requested_` false if `reserve` or the wait
+  for worker ids threw after the flag was cleared. Submissions could then be
+  accepted with no workers to run them. Failure now restores a stopped pool
+  and joins any threads that did start, so a throwing constructor cannot
+  destroy joinable `std::thread` objects.
+- `ThreadPool::flush()` treated an empty `worker_ids_` as "done", which is
+  also true in the window after `start()` clears the ids and before the first
+  worker publishes. A concurrent `flush()` could return while the queue still
+  had work. It now requires the pool to be stopped as well.
 
 ## [0.3.0]
 

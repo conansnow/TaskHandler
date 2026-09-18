@@ -68,14 +68,28 @@ TASKHANDLER_INLINE void ThreadPool::start() {
   std::unique_lock<std::mutex> lock{mutex_};
   stop_requested_ = false;
   worker_ids_.clear();
-  threads_.reserve(thread_count_);
   try {
+    // mutex_ stays held across spawn so a concurrent submit cannot accept
+    // work into a pool that then fails to start and leaves nobody to run it.
+    // reserve is inside the try for the same reason: a throwing allocation
+    // used to leave stop_requested_ false with threads_ empty.
+    threads_.reserve(thread_count_);
     for (std::size_t index = 0; index < thread_count_; index++)
       threads_.emplace_back([this, index] { run_worker(index); });
+
+    // Letting the workers publish their own ids closes the window in which a
+    // task could already be running while is_worker_thread() still answers
+    // false.
+    idle_cv_.wait(lock, [this] { return worker_ids_.size() == thread_count_; });
   } catch (...) {
+    // Restore a stopped pool rather than one that accepts work with no
+    // workers. Join before rethrowing so a constructor failure cannot
+    // destroy joinable std::thread objects (that is std::terminate).
     stop_requested_ = true;
     work_cv_.notify_all();
-    lock.unlock();
+    idle_cv_.notify_all();
+    if (lock.owns_lock())
+      lock.unlock();
     for (std::thread &thread : threads_) {
       if (thread.joinable())
         thread.join();
@@ -83,11 +97,6 @@ TASKHANDLER_INLINE void ThreadPool::start() {
     threads_.clear();
     throw;
   }
-
-  // Letting the workers publish their own ids closes the window in which a
-  // task could already be running while is_worker_thread() still answers
-  // false.
-  idle_cv_.wait(lock, [this] { return worker_ids_.size() == thread_count_; });
 }
 
 TASKHANDLER_INLINE void ThreadPool::stop() {
@@ -188,7 +197,12 @@ TASKHANDLER_INLINE void ThreadPool::flush() {
 
   std::unique_lock<std::mutex> lock{mutex_};
   idle_cv_.wait(lock, [this] {
-    return (queue_.empty() && busy_ == 0) || worker_ids_.empty();
+    // Idle, or stopped and every worker has exited. worker_ids_.empty()
+    // alone is also true in the window after start() clears the ids and
+    // before the first worker publishes, which would let flush() return
+    // while the queue still has work.
+    return (queue_.empty() && busy_ == 0) ||
+           (stop_requested_ && worker_ids_.empty());
   });
 }
 

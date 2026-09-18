@@ -59,6 +59,11 @@ struct ThreadPoolOptions {
   // is discarded. Blocked and Future tasks deliver their exceptions to the
   // caller and never reach this hook. An exception thrown by the hook itself
   // is ignored.
+  //
+  // A pool may invoke this from several workers at once. The callable must
+  // be safe for that, or the caller must synchronize it; the library will
+  // not. Serializing the hook inside the pool would stall workers, and a
+  // hook that called back into the pool could deadlock.
   std::function<void(std::exception_ptr)> on_exception{};
 
   // Largest number of tasks the pool will hold at once, counting queued work
@@ -87,7 +92,9 @@ public:
 
   // Submits `callable` and returns immediately. Exceptions escaping the task
   // are reported to ThreadPoolOptions::on_exception and otherwise discarded.
-  // There is no TaskId: a pool does not cancel queued work.
+  // There is no TaskId: a pool does not cancel queued work. Workers share
+  // one FIFO queue; a single worker runs queued tasks in submission order.
+  // Tasks on different workers may overlap.
   template <detail::QueuedPolicy T = Queued, detail::TaskCallable C>
   void add_callable(C &&callable);
 

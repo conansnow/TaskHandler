@@ -255,6 +255,23 @@ What it does not copy, on purpose:
 - **Work stealing.** A mutex and a deque are enough for a small pool, and a
   steal loop is a different product.
 
+`start()` holds `mutex_` across spawn so a concurrent submit cannot accept
+work into a pool that then fails to start. If reserve, thread creation or the
+wait for worker ids throws, the pool is put back to stopped, any threads that
+did start are joined, and the exception propagates. Leaving `stop_requested_`
+false with an empty `threads_` would accept work that nobody runs.
+
+`flush()` waits until the queue is empty and no worker is busy, or until
+stop has been requested and every worker has exited. `worker_ids_.empty()`
+alone is also true in the window after `start()` clears the ids and before
+the first worker publishes, which would let `flush()` return while the queue
+still had work.
+
+`on_exception` may run on several workers at once. The library does not
+serialize the hook: that would stall workers, and a hook that called back
+into the pool could deadlock. Callers that share mutable state in the hook
+have to synchronize it themselves.
+
 The remaining pool hazard is the usual one: if every worker is `Blocked` on
 more pool work, nothing runs. Inline-on-worker only helps the recursive and
 1-thread cases.

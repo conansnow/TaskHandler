@@ -222,7 +222,7 @@ only wants to know that the handler would not take the work can catch one type.
 | `conan::TaskHandlerQueueFull` | `max_pending` tasks are already waiting |
 | `conan::ThreadPoolError` | Base of the pool's refusal exceptions |
 | `conan::ThreadPoolStopped` | The pool has been stopped |
-| `conan::ThreadPoolQueueFull` | the pool already holds `max_pending` tasks |
+| `conan::ThreadPoolQueueFull` | The pool already holds `max_pending` tasks |
 
 ## Backpressure
 
@@ -298,7 +298,9 @@ std::future<int> answer = pool.add_callable<conan::Future>([] { return crunch();
 
 The policy tags are the same ones the handler uses. `Queued` returns `void`:
 a pool does not cancel queued work, so there is no `TaskId`. Delayed work
-stays on a handler; one thread should sleep on deadlines.
+stays on a handler; one thread should sleep on deadlines. Workers share one
+FIFO queue: a single worker runs queued tasks in submission order; tasks on
+different workers may overlap.
 
 Bounce a result onto a handler when it must touch handler-owned state:
 
@@ -312,11 +314,30 @@ pool.add_callable([&handler] {
 });
 ```
 
-`stop()` drains accepted work. `max_pending` refuses with
-`ThreadPoolQueueFull` rather than blocking. Recursive `Blocked` and `Future`
-from a worker run inline, which keeps a 1-thread pool from deadlocking on
-itself. If every worker is blocked waiting for more pool work, the pool still
-deadlocks: that is the same hazard as any fixed-size pool.
+```cpp
+std::size_t ThreadPool::pending() const;  // accepted, not yet started
+void ThreadPool::flush();                 // wait until the workers are idle
+bool ThreadPool::is_worker_thread() const;
+bool ThreadPool::running() const;
+std::size_t ThreadPool::thread_count() const noexcept;
+void ThreadPool::start();                 // idempotent
+void ThreadPool::stop();                  // drain, stop, join; idempotent
+```
+
+`stop()` drains accepted work. `flush()` waits until every task submitted so
+far has finished and the workers are idle; called from a worker it returns
+immediately, since waiting there could only deadlock. `start()` and `stop()`
+from inside a task follow the handler: `stop()` only records the request, and
+`start()` does nothing, because a worker cannot join itself.
+
+`max_pending` refuses with `ThreadPoolQueueFull` rather than blocking.
+Recursive `Blocked` and `Future` from a worker run inline, which keeps a
+1-thread pool from deadlocking on itself. If every worker is blocked waiting
+for more pool work, the pool still deadlocks: that is the same hazard as any
+fixed-size pool.
+
+`on_exception` may run on several workers at once. The hook must be safe for
+that, or the caller must synchronize it; the library will not.
 
 ## Lifetime
 
@@ -431,7 +452,8 @@ builds use a small polyfill for the queued callable.
 What you can rely on:
 
 - One worker per handler, so tasks on the same handler never run concurrently.
-- Tasks on a `ThreadPool` may run concurrently; protect shared state.
+- Tasks on a `ThreadPool` may run concurrently; protect shared state. A
+  single worker still runs its queued tasks in submission order.
 - Higher priority first on a handler; equal priority in submission order.
 - `stop()` and destruction run the work already accepted.
 - A delayed task never runs before its deadline.
