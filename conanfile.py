@@ -63,12 +63,13 @@ class TaskHandlerConan(ConanFile):
         cmake.install()
 
     def package_info(self):
-        # Prefer the installed TaskHandlerConfig.cmake so both exported
-        # targets work the same way as a plain cmake --install.
+        # CMakeDeps generates TaskHandlerConfig.cmake from this metadata.
+        # cmake_find_mode=none plus the installed config is not enough on
+        # Conan 2.32: CMakeToolchain no longer puts the package root on
+        # CMAKE_PREFIX_PATH unless CMakeDeps (or CMakeConfigDeps) does it.
         self.cpp_info.set_property("cmake_file_name", "TaskHandler")
-        self.cpp_info.set_property("cmake_target_name", "TaskHandler::task_handler")
-        self.cpp_info.set_property("cmake_find_mode", "none")
-        self.cpp_info.builddirs.append(os.path.join("lib", "cmake", "TaskHandler"))
+        self.cpp_info.set_property("cmake_find_mode", "config")
+        self.cpp_info.default_components = ["task_handler"]
 
         compiled_defines = ["TASKHANDLER_COMPILED_LIB"]
         if self.options.shared:

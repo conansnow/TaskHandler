@@ -139,13 +139,13 @@ conan create path/to/TaskHandler --version=0.3.0 -s compiler.cppstd=23
 ```
 
 ```cmake
-# Configure with the CMakeToolchain Conan generated, then:
+# Configure with the CMakeToolchain and CMakeDeps Conan generated, then:
 find_package(TaskHandler 0.3 REQUIRED)
 target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
 ```
 
-The recipe uses the installed CMake package config, so `TaskHandler::header_only`
-is there too. `test_package/` links both targets.
+The recipe exposes both CMake targets through CMakeDeps. `test_package/`
+links both of them.
 
 ### With pkg-config
 

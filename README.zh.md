@@ -121,12 +121,12 @@ conan create path/to/TaskHandler --version=0.3.0 -s compiler.cppstd=23
 ```
 
 ```cmake
-# 用 Conan 生成的 CMakeToolchain 配置，然后：
+# 用 Conan 生成的 CMakeToolchain 和 CMakeDeps 配置，然后：
 find_package(TaskHandler 0.3 REQUIRED)
 target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
 ```
 
-配方走的是安装出来的 CMake package config，所以 `TaskHandler::header_only` 也在。`test_package/` 会链两个 target。
+配方通过 CMakeDeps 导出两个 CMake target。`test_package/` 会链两个 target。
 
 ### 用 pkg-config
 

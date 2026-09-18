@@ -42,7 +42,8 @@ Pick one CMake target per binary and do not mix them.
 - `ports/taskhandler/` -- vcpkg overlay port for the current tree.
   Not a microsoft/vcpkg registry port.
 - `conanfile.py`, `test_package/` -- Conan 2 recipe. Package name
-  `taskhandler`; C++ namespace remains `conan`.
+  `taskhandler`; C++ namespace remains `conan`. CMakeDeps exposes
+  both exported CMake targets.
 - `CMakePresets.json` -- `debug`, `release`, `static`, `asan`, `tsan`.
 
 Do not include `detail/*-inl.h` from consumer code. The public headers

@@ -26,8 +26,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `vcpkg install taskhandler --overlay-ports=ports`. The root `vcpkg.json`
   is still only the developer manifest (GoogleTest behind `tests`).
 - Conan 2 recipe (`conanfile.py` and `test_package/`). The package name is
-  `taskhandler`; the C++ namespace remains `conan`. The recipe reuses the
-  installed CMake package config so both exported targets work.
+  `taskhandler`; the C++ namespace remains `conan`. CMakeDeps exposes both
+  exported targets.
 
 ### Breaking
 
