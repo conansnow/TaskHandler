@@ -439,35 +439,28 @@ TEST(task_handler, scheduled_task_runs_no_earlier_than_its_delay) {
 TEST(task_handler, scheduled_tasks_run_in_deadline_order) {
   TaskHandler handler;
   auto recorder = std::make_shared<Recorder>();
-  auto first = std::make_shared<std::promise<void>>();
-  auto first_future = first->get_future();
   auto done = std::make_shared<std::promise<void>>();
   auto done_future = done->get_future();
 
   // Park the worker so every timer is queued before any of them can run.
   // Without that, a slow first wakeup promotes several due timers in one
-  // go, they fall into ready_ in submission order, and this test flakes.
+  // go; they then fall into ready_ by sequence (submission order), which is
+  // 3, 1, 2 rather than deadline order. Release immediately after queueing
+  // so the worker wait_until's the earliest deadline from a known start.
+  // Sleeping until "only the first is due" overshoots on a loaded runner
+  // and promotes 1 and 2 together, which is a test flake, not a product bug.
   Gate gate{handler};
   const auto base = std::chrono::steady_clock::now();
-  constexpr auto kSlot = std::chrono::milliseconds(200);
+  constexpr auto kSlot = std::chrono::milliseconds(100);
 
   handler.add_callable_at(base + 3 * kSlot,
                           [recorder] { recorder->record(3); });
-  handler.add_callable_at(base + 1 * kSlot, [recorder, first] {
-    recorder->record(1);
-    first->set_value();
-  });
+  handler.add_callable_at(base + 1 * kSlot,
+                          [recorder] { recorder->record(1); });
   handler.add_callable_at(base + 2 * kSlot,
                           [recorder] { recorder->record(2); });
   handler.add_callable_at(base + 4 * kSlot, [done] { done->set_value(); });
-
-  // Only the 200ms task is due. Releasing now means the worker must honour
-  // that deadline rather than the fact that 3 was submitted first.
-  std::this_thread::sleep_until(base + kSlot + kSlot / 2);
   gate.release();
-
-  ASSERT_EQ(std::future_status::ready, first_future.wait_for(kTimeout));
-  EXPECT_EQ(std::vector<int>({1}), recorder->snapshot());
 
   ASSERT_EQ(std::future_status::ready, done_future.wait_for(kTimeout));
   EXPECT_EQ(std::vector<int>({1, 2, 3}), recorder->snapshot());

@@ -55,6 +55,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mutex was held across `stop()`. The pointers are now copied, the lock is
   dropped, then the workers are joined. A second pass catches a handler created
   during the first join.
+- `scheduled_tasks_run_in_deadline_order` still slept until "only the first
+  timer is due". On a loaded macOS runner that sleep overshot the next slot,
+  two timers were promoted together, and the mid-test snapshot saw `{1, 2}`.
+  The test now releases the gate immediately and only asserts the final
+  deadline order.
 - `~TaskHandler()` could `std::terminate` if `std::thread::join` threw, because
   the destructor is implicitly `noexcept`. It now swallows that error. The
   worker also reports, rather than dying on, an exception from a task
