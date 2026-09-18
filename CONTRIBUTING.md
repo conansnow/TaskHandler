@@ -5,10 +5,11 @@ mostly about the same things CI checks, so this page is short.
 
 ## Getting a build
 
-Dependencies come from [vcpkg](https://github.com/microsoft/vcpkg); point
-`VCPKG_ROOT` at your checkout. Only the test suite needs anything at all
-(GoogleTest, behind the `tests` feature), and the library itself has no
-dependencies beyond the standard library and a thread library.
+The library needs C++23 and CMake 3.28. Dependencies come from
+[vcpkg](https://github.com/microsoft/vcpkg); point `VCPKG_ROOT` at your
+checkout. Only the test suite needs anything at all (GoogleTest, behind the
+`tests` feature), and the library itself has no dependencies beyond the
+standard library and a thread library.
 
 ```sh
 cmake --preset debug

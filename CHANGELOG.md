@@ -38,8 +38,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `add_callable_after` takes any `std::chrono::duration` through the
   `detail::ChronoDuration` concept rather than a bare `Rep`/`Period` pair.
   Call sites that already passed a duration do not change.
-- Shared-library exception types use `TASKHANDLER_API` on Windows so a
-  `TaskHandlerStopped` thrown inside the DLL can be caught by type outside it.
+- Shared-library exception types use `TASKHANDLER_VISIBLE` (on Windows that
+  is an alias of `TASKHANDLER_API`) so a `TaskHandlerStopped` thrown inside
+  the DLL can be caught by type outside it.
 - Task and timer destruction share one internal nothrow helper. No API change.
 - Immediate and delayed `Future` paths share one `packaged_task` helper, and
   the leftover `detail::make_task` wrapper is gone. No API change.
