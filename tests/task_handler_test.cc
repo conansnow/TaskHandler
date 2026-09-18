@@ -539,11 +539,14 @@ TEST(task_handler, scheduled_tasks_run_in_deadline_order) {
   // go; they then fall into ready_ by sequence (submission order), which is
   // 3, 1, 2 rather than deadline order. Release immediately after queueing
   // so the worker wait_until's the earliest deadline from a known start.
-  // Sleeping until "only the first is due" overshoots on a loaded runner
-  // and promotes 1 and 2 together, which is a test flake, not a product bug.
+  //
+  // The slot has to outlast a slow debug/shared-library promotion: macOS
+  // debug CI ran 1, then promoted 2 and 3 together and executed them as
+  // 3, 2 (sequence order) when the gap was 100 ms. That is a test flake,
+  // not a product bug -- the same run's header-only binary passed.
   Gate gate{handler};
   const auto base = std::chrono::steady_clock::now();
-  constexpr auto kSlot = std::chrono::milliseconds(100);
+  constexpr auto kSlot = std::chrono::milliseconds(500);
 
   handler.add_callable_at(base + 3 * kSlot,
                           [recorder] { recorder->record(3); });
