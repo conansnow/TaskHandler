@@ -22,9 +22,9 @@
 // the version in a #if, before any of the declarations below exist.
 // NOLINTBEGIN(cppcoreguidelines-macro-usage,cppcoreguidelines-macro-to-enum,modernize-macro-to-enum)
 #define TASKHANDLER_VERSION_MAJOR 0
-#define TASKHANDLER_VERSION_MINOR 2
+#define TASKHANDLER_VERSION_MINOR 3
 #define TASKHANDLER_VERSION_PATCH 0
-#define TASKHANDLER_VERSION_STRING "0.2.0"
+#define TASKHANDLER_VERSION_STRING "0.3.0"
 
 // Comparable form, for #if checks against a required version.
 #define TASKHANDLER_VERSION                                                    \

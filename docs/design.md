@@ -253,7 +253,7 @@ a header that has drifted from the shared object next to it shows up.
 Semantic versioning, with the usual pre-1.0 caveat: while the major version is
 0, a minor bump may break API or ABI, and the changelog says what broke. The
 installed package config is written `COMPATIBILITY SameMinorVersion`, so
-`find_package(TaskHandler 0.2)` will not silently accept a 0.3 install. From
+`find_package(TaskHandler 0.3)` will not silently accept a 0.4 install. From
 1.0 this can become `SameMajorVersion`.
 
 ## Testing
