@@ -109,6 +109,12 @@ concept FuturePolicy = std::same_as<T, Future>;
 template <typename C>
 concept TaskCallable = std::invocable<std::decay_t<C> &>;
 
+template <typename D>
+concept ChronoDuration = requires {
+  typename D::rep;
+  typename D::period;
+} && std::same_as<D, std::chrono::duration<typename D::rep, typename D::period>>;
+
 template <typename C>
 using TaskResultT = std::invoke_result_t<std::decay_t<C> &>;
 
@@ -187,11 +193,8 @@ public:
   [[nodiscard]] bool valid() const noexcept { return sequence_ != 0; }
   explicit operator bool() const noexcept { return valid(); }
 
-  [[nodiscard]] friend bool operator==(const TaskId &lhs,
-                                       const TaskId &rhs) noexcept {
-    return lhs.kind_ == rhs.kind_ && lhs.priority_ == rhs.priority_ &&
-           lhs.sequence_ == rhs.sequence_ && lhs.deadline_ == rhs.deadline_;
-  }
+  [[nodiscard]] friend bool operator==(const TaskId &,
+                                       const TaskId &) noexcept = default;
 
 private:
   friend class TaskHandler;
@@ -264,16 +267,14 @@ public:
   // work is never run inline, even when already on the worker: getting a
   // delayed Future from that thread would wait for a task that cannot start
   // until the current one returns.
-  template <detail::QueuedPolicy T = Queued, typename Rep, typename Period,
+  template <detail::QueuedPolicy T = Queued, detail::ChronoDuration D,
             detail::TaskCallable C>
-  TaskId add_callable_after(std::chrono::duration<Rep, Period> delay,
-                            C &&callable, int priority = 0);
+  TaskId add_callable_after(D delay, C &&callable, int priority = 0);
 
-  template <detail::FuturePolicy T, typename Rep, typename Period,
+  template <detail::FuturePolicy T, detail::ChronoDuration D,
             detail::TaskCallable C>
   std::future<detail::TaskResultT<C>>
-  add_callable_after(std::chrono::duration<Rep, Period> delay, C &&callable,
-                     int priority = 0);
+  add_callable_after(D delay, C &&callable, int priority = 0);
 
   template <detail::QueuedPolicy T = Queued, detail::TaskCallable C>
   TaskId add_callable_at(std::chrono::steady_clock::time_point deadline,
@@ -390,7 +391,7 @@ template <detail::BlockedPolicy T, detail::TaskCallable C>
 // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
 void TaskHandler::add_callable(C &&callable, int priority) {
   if (is_current_thread()) {
-    callable();
+    std::invoke(callable);
     return;
   }
 
@@ -403,7 +404,7 @@ void TaskHandler::add_callable(C &&callable, int priority) {
   // throws std::future_error rather than blocking forever.
   submit(detail::make_task([&callable, &promise] {
            try {
-             callable();
+             std::invoke(callable);
              promise.set_value();
            } catch (...) {
              promise.set_exception(std::current_exception());
@@ -436,19 +437,17 @@ std::future<detail::TaskResultT<C>> TaskHandler::add_callable(C &&callable,
   return future;
 }
 
-template <detail::QueuedPolicy T, typename Rep, typename Period,
+template <detail::QueuedPolicy T, detail::ChronoDuration D,
           detail::TaskCallable C>
-TaskId TaskHandler::add_callable_after(std::chrono::duration<Rep, Period> delay,
-                                       C &&callable, int priority) {
+TaskId TaskHandler::add_callable_after(D delay, C &&callable, int priority) {
   return add_callable_at<Queued>(std::chrono::steady_clock::now() + delay,
                                  std::forward<C>(callable), priority);
 }
 
-template <detail::FuturePolicy T, typename Rep, typename Period,
+template <detail::FuturePolicy T, detail::ChronoDuration D,
           detail::TaskCallable C>
 std::future<detail::TaskResultT<C>>
-TaskHandler::add_callable_after(std::chrono::duration<Rep, Period> delay,
-                                C &&callable, int priority) {
+TaskHandler::add_callable_after(D delay, C &&callable, int priority) {
   return add_callable_at<Future>(std::chrono::steady_clock::now() + delay,
                                  std::forward<C>(callable), priority);
 }

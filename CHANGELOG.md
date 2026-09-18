@@ -31,6 +31,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CMake turns off C++ module scanning (`CMAKE_CXX_SCAN_FOR_MODULES`). The
   library is not modular, and a missing `clang-scan-deps` otherwise breaks
   `find_package(Threads)` under Clang and CMake 4.
+- `add_callable_after` takes any `std::chrono::duration` through the
+  `detail::ChronoDuration` concept rather than a bare `Rep`/`Period` pair.
+  Call sites that already passed a duration do not change.
 
 ## [0.3.0]
 

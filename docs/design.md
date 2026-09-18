@@ -111,10 +111,12 @@ the callable and priority arguments stay in one place:
 | `Future` | `std::future<R>` | Owned, via `std::packaged_task` |
 
 `add_callable_after` and `add_callable_at` take the same policy tag for
-`Queued` and `Future`. Delayed work is never run inline: on the worker that
-would either ignore the deadline or wait for a task that cannot start until
-the current one returns. There is no delayed `Blocked`; that would park the
-caller until the deadline.
+`Queued` and `Future`. The delay is any `std::chrono::duration`, constrained
+by `detail::ChronoDuration`; the deadline is still a `steady_clock` time
+point. Delayed work is never run inline: on the worker that would either
+ignore the deadline or wait for a task that cannot start until the current
+one returns. There is no delayed `Blocked`; that would park the caller until
+the deadline.
 
 `Blocked` is the one case that captures the caller's callable by reference, and
 it is sound only because the function does not return until the task has run.

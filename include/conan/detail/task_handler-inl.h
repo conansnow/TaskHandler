@@ -110,9 +110,8 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
     promote_due_timers(std::chrono::steady_clock::now());
 
     if (!ready_.empty()) {
-      auto next = ready_.begin();
-      detail::Task task = std::move(next->second);
-      ready_.erase(next);
+      auto node = ready_.extract(ready_.begin());
+      detail::Task task = std::move(node.mapped());
       busy_ = true;
 
       lock.unlock();
@@ -166,13 +165,12 @@ TASKHANDLER_INLINE void TaskHandler::run_worker() {
 TASKHANDLER_INLINE void
 TaskHandler::promote_due_timers(std::chrono::steady_clock::time_point now) {
   while (!timed_.empty() && timed_.begin()->first.deadline <= now) {
-    auto due = timed_.begin();
+    auto node = timed_.extract(timed_.begin());
     // Keeping the original sequence number means a task stays cancellable
     // across the move from the timer queue to the runnable queue.
-    ready_.emplace(detail::ReadyKey{.priority = due->second.priority,
-                                    .sequence = due->first.sequence},
-                   std::move(due->second.task));
-    timed_.erase(due);
+    ready_.emplace(detail::ReadyKey{.priority = node.mapped().priority,
+                                    .sequence = node.key().sequence},
+                   std::move(node.mapped().task));
   }
 }
 
