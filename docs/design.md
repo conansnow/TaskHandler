@@ -1,8 +1,8 @@
 # Design notes
 
 Why TaskHandler is built the way it is. The README documents what the library
-does (`README.md` in Chinese, `README.en.md` in English); this is for anyone
-changing how it does it.
+does; [README.zh.md](../README.zh.md) is the Chinese translation. This is for
+anyone changing how it does it.
 
 - [Scope](#scope)
 - [Shape](#shape)

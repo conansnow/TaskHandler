@@ -1,14 +1,21 @@
 # TaskHandler
 
-**中文** | [English](README.en.md)
+**English** | [中文](README.zh.md)
 
-面向 C++23 的单 worker 任务队列，以及一个允许并发执行的兄弟类型线程池。
+A small single-worker task queue for C++23, plus a sibling thread pool for
+work that is allowed to run concurrently.
 
-每个 handler 恰好拥有一条线程，提交给它的任务都在这条线程上逐个执行。这正是它适合做事件处理的原因：handler 持有的状态不需要加锁，因为只有它的 worker 会碰到这些状态。可以提交后不管、提交后等待，也可以提交后拿走一个 future。
+Every handler owns exactly one thread, and everything submitted to that handler
+runs on it, one task at a time. That is what makes it useful as an event
+handler: state owned by a handler needs no locking, because only its worker
+ever touches it. Submit work and forget about it, submit work and wait for it,
+or submit work and take a future for the result.
 
-可以重叠的 CPU 工作应放到 `ThreadPool` 上，而不是在 handler 里再开一条 worker。结果若必须碰到 handler 持有的状态，再弹回 handler。
+CPU work that can overlap belongs on `ThreadPool`, not on a second worker
+inside the handler. Bounce results back onto a handler when they must touch
+handler-owned state.
 
-同一份源码既可当 header-only 用，也可编译成库。
+Usable header-only or as a compiled library, from the same source.
 
 ```cpp
 #include "conan/task_handler.h"
@@ -26,29 +33,31 @@ std::future<int> answer = handler.add_callable<conan::Future>([] { return 42; })
 std::cout << answer.get() << '\n';
 ```
 
-## 目录
+## Contents
 
-- [安装](#安装)
-- [提交任务](#提交任务)
-- [优先级](#优先级)
-- [延时任务与取消](#延时任务与取消)
-- [错误](#错误)
-- [背压](#背压)
-- [共享 handler](#共享-handler)
-- [线程池](#线程池)
-- [生命周期](#生命周期)
-- [选项](#选项)
-- [版本](#版本)
-- [构建](#构建)
-- [保证与限制](#保证与限制)
-- [参与贡献](#参与贡献)
-- [许可证](#许可证)
+- [Installing](#installing)
+- [Submitting work](#submitting-work)
+- [Priority](#priority)
+- [Delayed work and cancellation](#delayed-work-and-cancellation)
+- [Errors](#errors)
+- [Backpressure](#backpressure)
+- [Shared handlers](#shared-handlers)
+- [Thread pool](#thread-pool)
+- [Lifetime](#lifetime)
+- [Options](#options)
+- [Version](#version)
+- [Building](#building)
+- [Guarantees and limits](#guarantees-and-limits)
+- [Contributing](#contributing)
+- [License](#license)
 
-## 安装
+## Installing
 
-### 仅头文件
+### Header-only
 
-把 `include/conan/` 拷进工程并包含头文件即可。消费方必须按 C++23 编译。除此之外没有别的依赖，但仍需链接线程库：
+Copy `include/conan/` into your project and include the header. The consumer
+must compile as C++23. Nothing else is needed, though you still have to link a
+thread library:
 
 ```cmake
 find_package(Threads REQUIRED)
@@ -56,14 +65,14 @@ target_include_directories(my_app PRIVATE third_party/TaskHandler/include)
 target_link_libraries(my_app PRIVATE Threads::Threads)
 ```
 
-### 作为子目录
+### As a subdirectory
 
 ```cmake
 add_subdirectory(third_party/TaskHandler)
 target_link_libraries(my_app PRIVATE TaskHandler::header_only)   # or ::task_handler
 ```
 
-### 用 FetchContent
+### With FetchContent
 
 ```cmake
 include(FetchContent)
@@ -75,9 +84,11 @@ FetchContent_MakeAvailable(TaskHandler)
 target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
 ```
 
-测试、示例、benchmark 和安装规则只在 TaskHandler 作为顶层工程时默认打开，所以消费方只会编到库本身。
+Tests, examples, benchmarks and install rules default to on only when
+TaskHandler is the top-level project, so a consumer builds the library and
+nothing else.
 
-### 作为已安装的包
+### As an installed package
 
 ```sh
 cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
@@ -90,18 +101,21 @@ find_package(TaskHandler 0.3 REQUIRED)
 target_link_libraries(my_app PRIVATE TaskHandler::task_handler)
 ```
 
-导出两个 target：
+Two targets are exported:
 
-| Target | 作用 |
+| Target | What it does |
 | --- | --- |
-| `TaskHandler::header_only` | Interface target。不用编、不用发二进制。 |
-| `TaskHandler::task_handler` | 编译后的库。消费方编译更快，只需发一份共享对象。 |
+| `TaskHandler::header_only` | Interface target. Nothing to build or ship. |
+| `TaskHandler::task_handler` | Compiled library. Shorter consumer build times, one shared object to ship. |
 
-`TaskHandler::task_handler` 会自行向下传播 `TASKHANDLER_COMPILED_LIB`（共享库还会带上 `TASKHANDLER_SHARED_LIB`），不必手写宏。每个二进制选一个 target，不要混用。
+`TaskHandler::task_handler` propagates `TASKHANDLER_COMPILED_LIB` (and
+`TASKHANDLER_SHARED_LIB` for shared builds) on its own, so there is nothing to
+define by hand. Pick one target per binary and do not mix them.
 
-## 提交任务
+## Submitting work
 
-`add_callable` 的第一个模板参数是策略标签，默认是 `Queued`。
+`add_callable` takes a policy tag as its first template argument. The default
+is `Queued`.
 
 ```cpp
 // Queued: returns immediately, gives back a TaskId you can cancel with.
@@ -116,13 +130,15 @@ std::future<std::unique_ptr<Reply>> reply =
     handler.add_callable<conan::Future>([] { return fetch(); });
 ```
 
-可调用对象不必能拷贝，捕获 `unique_ptr` 没问题：
+Callables do not need to be copy-constructible, so captured `unique_ptr` state
+is fine:
 
 ```cpp
 handler.add_callable([data = std::move(data)] { consume(*data); });
 ```
 
-`Blocked` 和 `Future` 若已经在该 handler 自己的 worker 上被调用，会就地执行而不是入队，避免自己等自己。递归使用因此是安全的：
+`Blocked` and `Future` detect being called from the handler's own worker thread
+and run the task inline instead of deadlocking, which makes recursive use safe:
 
 ```cpp
 handler.add_callable<conan::Blocked>([&] {
@@ -132,9 +148,10 @@ handler.add_callable<conan::Blocked>([&] {
 });
 ```
 
-## 优先级
+## Priority
 
-每次提交都可以带一个可选优先级。**数值越大越先跑。** 同优先级按提交顺序。
+Every submission takes an optional priority. **Higher values run first.** Tasks
+of equal priority run in submission order.
 
 ```cpp
 handler.add_callable([] { normal(); });            // priority 0
@@ -142,11 +159,13 @@ handler.add_callable([] { urgent(); }, 10);        // jumps the queue
 handler.add_callable([] { whenever(); }, -10);     // sinks to the bottom
 ```
 
-优先级只决定 worker 接下来取哪一个，不会打断已经在跑的任务。
+Priority only decides what the worker picks up next. It never interrupts a task
+that is already running.
 
-> 0.2.0 之前比较方向相反，*更小* 的值先跑。如果给旧版本传过非零优先级，把符号反过来。
+> Before 0.2.0 the comparison ran the other way and *lower* values went first.
+> If you passed a non-zero priority to an older version, flip its sign.
 
-## 延时任务与取消
+## Delayed work and cancellation
 
 ```cpp
 using namespace std::chrono_literals;
@@ -161,15 +180,25 @@ std::future<Reply> reply =
     handler.add_callable_after<conan::Future>(5s, [] { return fetch(); });
 ```
 
-延时任务在截止时刻变成可运行，之后再按优先级排队，所以繁忙的 handler 可能比预定时间更晚才跑到它。绝不会更早跑。延时任务即使在 worker 上也绝不就地执行：若在某个任务里对这个 future 做 `get()`，会等到一项要等当前任务返回才能开始的工作。
+A delayed task becomes runnable at its deadline and is then ordered by priority
+like anything else, so a busy handler may run it later than asked. It is never
+run earlier. Delayed work is never run inline, even from the worker thread:
+getting that future from inside a task would wait for work that cannot start
+until the current task returns.
 
-`cancel` 对已经跑完、正在跑、或已经取消过的任务返回 `false`。之后 `TaskId` 仍然 `valid()`：它命名的是一次提交，并不表示任务还在排队。延时 `Future` 返回的是 future 而不是 id，因此靠 `stop()`（或析构）丢弃，future 会变成 broken。
+`cancel` returns `false` for a task that already ran, is running, or was
+already cancelled. A `TaskId` stays `valid()` after that; it names a submission,
+it does not mean the task is still pending. Delayed `Future` submissions return
+the future rather than an id, so they are dropped by `stop()` (or destruction)
+instead, which leaves the future broken.
 
-## 错误
+## Errors
 
-`Blocked` 任务抛出的异常会从 `add_callable` 重新抛出。`Future` 任务的异常存在 future 里，由 `get()` 重新抛出。
+An exception from a `Blocked` task is rethrown out of `add_callable`. An
+exception from a `Future` task is stored in the future and rethrown by `get()`.
 
-`Queued` 任务没有地方报告失败，默认把异常丢掉。要看见它们，装一个 hook：
+A `Queued` task has nowhere to report a failure, so by default the exception is
+discarded. Install a hook to see them:
 
 ```cpp
 conan::TaskHandlerOptions options;
@@ -183,22 +212,25 @@ options.on_exception = [](std::exception_ptr error) {
 conan::TaskHandler handler{std::move(options)};
 ```
 
-hook 在 worker 线程上运行，而且只对 `Queued` 任务触发。
+The hook runs on the worker thread and only ever fires for `Queued` tasks.
 
-提交被拒绝时会抛异常。两种拒绝共享一个基类，只关心「没接住」的调用方可以只 catch 一种类型。
+A submission that is refused throws. Both cases share a base, so a caller that
+only wants to know that the handler would not take the work can catch one type.
 
-| 异常 | 何时抛出 |
+| Exception | Thrown when |
 | --- | --- |
-| `conan::TaskHandlerError` | 两者的基类；同时也是 `std::runtime_error` |
-| `conan::TaskHandlerStopped` | handler 已经 stop |
-| `conan::TaskHandlerQueueFull` | 已有 `max_pending` 个任务在等 |
-| `conan::ThreadPoolError` | 线程池拒绝异常的基类 |
-| `conan::ThreadPoolStopped` | 线程池已经 stop |
-| `conan::ThreadPoolQueueFull` | 线程池已持有 `max_pending` 个任务 |
+| `conan::TaskHandlerError` | Base of both; also a `std::runtime_error` |
+| `conan::TaskHandlerStopped` | The handler has been stopped |
+| `conan::TaskHandlerQueueFull` | `max_pending` tasks are already waiting |
+| `conan::ThreadPoolError` | Base of the pool's refusal exceptions |
+| `conan::ThreadPoolStopped` | The pool has been stopped |
+| `conan::ThreadPoolQueueFull` | The pool already holds `max_pending` tasks |
 
-## 背压
+## Backpressure
 
-队列默认无界。当生产者可能跑得比 handler 快时，给它设上限；达到上限后提交被拒绝，而不是把队列撑到把进程内存吃光：
+The queue is unbounded by default. Bound it when the producer can outrun the
+handler, and submission is refused rather than growing the queue until the
+process runs out of memory:
 
 ```cpp
 conan::TaskHandlerOptions options;
@@ -212,33 +244,46 @@ try {
 }
 ```
 
-上限把可运行的和尚未到期的任务算在一起，不含正在跑的那一个。来自 worker 的递归 `Blocked` / `Future` 就地执行、不入队，所以上限不会拒绝它们。
+The limit counts runnable and not-yet-due tasks together, and excludes the task
+currently running. Recursive `Blocked` and `Future` submissions from the worker
+thread run inline without queueing, so the limit never refuses them.
 
-故意选择抛异常而不是阻塞提交：阻塞提交会把一条不相干的线程无限期停住，两个 handler 之间这就等着死锁。
+It throws rather than blocking on purpose: a blocking submit is a place where an
+unrelated thread can be parked indefinitely, and between two handlers that is a
+deadlock waiting to happen.
 
-## 共享 handler
+## Shared handlers
 
-不构造也能用到三个进程级 handler，第一次使用时创建。
+Three process-wide handlers are available without constructing anything. They
+are created on first use.
 
 ```cpp
 conan::TaskHandler::instance().add_callable([] { work(); });      // index 0
 conan::TaskHandler::instance<1>().add_callable([] { other(); });  // index 1
 ```
 
-`instance(index)` 接受运行期下标，超过 `instance_count()` 抛 `std::out_of_range`。`init()` 提前启动全部三个；`uninit()` 排空并停掉它们。两者都可选、都幂等，进程退出时也会自动关闭。
+`instance(index)` takes a runtime index and throws `std::out_of_range` past
+`instance_count()`. `init()` starts all three up front; `uninit()` drains and
+stops them. Both are optional and idempotent, and shutdown also happens
+automatically at program exit.
 
-返回的引用在程序剩余生命周期内一直有效，包括跨越 `uninit()`，因此不会悬空。`uninit()` 之后 handler 只是停掉了，提交会抛异常，直到再次 `init()`。
+The returned reference stays valid for the rest of the program, including
+across `uninit()`, so it can never be left dangling. After `uninit()` the
+handler is simply stopped, and submitting to it throws until `init()`.
 
-需要不同数量的 worker，或一个自己拥有的？自己构造：
+Need a different number of workers, or one you own? Construct your own:
 
 ```cpp
 conan::TaskHandler render_thread;
 conan::TaskHandler io_thread;
 ```
 
-## 线程池
+## Thread pool
 
-`ThreadPool` 是允许并发执行的那一类工作的类型。`TaskHandler` 保持一条 worker：这正是它存在的意义。包含 `conan/thread_pool.h` 并构造一个自己拥有的池。没有进程级的池。
+`ThreadPool` is the type for work that is allowed to run concurrently.
+`TaskHandler` stays one worker: that is the whole point of it. Include
+`conan/thread_pool.h` and construct a pool you own. There is no process-wide
+pool.
 
 ```cpp
 #include "conan/thread_pool.h"
@@ -253,9 +298,13 @@ pool.add_callable<conan::Blocked>([&] { value = crunch(); });
 std::future<int> answer = pool.add_callable<conan::Future>([] { return crunch(); });
 ```
 
-策略标签与 handler 相同。`Queued` 返回 `void`：池不取消已入队的工作，所以没有 `TaskId`。延时工作留在 handler 上；该由一条线程去睡在截止时刻上。worker 共享一条 FIFO 队列：单个 worker 按提交顺序跑已入队的任务；不同 worker 上的任务可以重叠。
+The policy tags are the same ones the handler uses. `Queued` returns `void`:
+a pool does not cancel queued work, so there is no `TaskId`. Delayed work
+stays on a handler; one thread should sleep on deadlines. Workers share one
+FIFO queue: a single worker runs queued tasks in submission order; tasks on
+different workers may overlap.
 
-结果必须碰到 handler 持有的状态时，弹回 handler：
+Bounce a result onto a handler when it must touch handler-owned state:
 
 ```cpp
 conan::TaskHandler handler;
@@ -277,15 +326,25 @@ void ThreadPool::start();                 // idempotent
 void ThreadPool::stop();                  // drain, stop, join; idempotent
 ```
 
-`stop()` 会排空已经接受的工作。`flush()` 等到目前已提交的任务都跑完、worker 空闲；从 worker 里调用会立即返回，因为在那里等只会死锁。任务内部的 `start()` / `stop()` 与 handler 相同：`stop()` 只记下请求，`start()` 什么也不做，因为 worker 不能 join 自己。
+`stop()` drains accepted work. `flush()` waits until every task submitted so
+far has finished and the workers are idle; called from a worker it returns
+immediately, since waiting there could only deadlock. `start()` and `stop()`
+from inside a task follow the handler: `stop()` only records the request, and
+`start()` does nothing, because a worker cannot join itself.
 
-`max_pending` 以 `ThreadPoolQueueFull` 拒绝，而不是阻塞。来自 worker 的递归 `Blocked` 和 `Future` 就地执行，这样 1 线程的池不会自己等自己。如果每个 worker 都阻塞在等待更多池内工作上，池仍然会死锁：固定大小的池都有这个风险。
+`max_pending` refuses with `ThreadPoolQueueFull` rather than blocking.
+Recursive `Blocked` and `Future` from a worker run inline, which keeps a
+1-thread pool from deadlocking on itself. If every worker is blocked waiting
+for more pool work, the pool still deadlocks: that is the same hazard as any
+fixed-size pool.
 
-`on_exception` 可能被多个 worker 同时调用。hook 必须对此安全，否则由调用方自己同步；库不会替你串行化。
+`on_exception` may run on several workers at once. The hook must be safe for
+that, or the caller must synchronize it; the library will not.
 
-## 生命周期
+## Lifetime
 
-构造 handler 会启动它的 worker。销毁时先跑完已经入队的工作，再 join。
+Constructing a handler starts its worker. Destroying it runs everything already
+queued, then joins.
 
 ```cpp
 void TaskHandler::start();   // idempotent
@@ -293,9 +352,16 @@ void TaskHandler::stop();    // drain, stop, join; idempotent
 bool TaskHandler::running() const;
 ```
 
-`stop()` 会跑已经接受的工作而不是丢掉，这样 `Blocked` 的调用方不会一直等一个不会再跑的任务。尚未到期的延时任务会被丢弃，之后 `start()` 可以把 handler 拉回来。
+`stop()` runs the work that was already accepted rather than dropping it, so a
+`Blocked` caller is never left waiting on a task that will not run. Delayed
+tasks that are not yet due are discarded, and `start()` brings the handler back
+afterwards.
 
-从 handler 自己的任务里调用 `stop()` 只记下请求然后返回，因为线程不能 join 自己。worker 排空队列后自行退出。从任务里调用 `start()` 什么也不做：这条 worker 按定义正在跑，已经发出的 stop 请求只能由别的线程收回。
+Calling `stop()` from inside one of the handler's own tasks only records the
+request and returns, because a thread cannot join itself. The worker finishes
+draining and exits on its own. `start()` from inside a task does nothing at all:
+the worker is running by definition, and a stop request already made can only be
+taken back from another thread.
 
 ```cpp
 std::size_t TaskHandler::pending() const;   // accepted, not yet started
@@ -303,9 +369,11 @@ void TaskHandler::flush();                  // wait for runnable work only
 bool TaskHandler::is_current_thread() const;
 ```
 
-`flush()` 只等可运行的工作，不等仍在等截止时刻的延时任务。从 worker 线程调用会立即返回，因为在那里等只会死锁。
+`flush()` waits for runnable work only, not for delayed tasks that are still
+waiting on a deadline. Called from the worker thread it returns immediately,
+since waiting there could only deadlock.
 
-## 选项
+## Options
 
 ```cpp
 struct TaskHandlerOptions {
@@ -315,11 +383,16 @@ struct TaskHandlerOptions {
 };
 ```
 
-`thread_name` 在 Linux、macOS 和 Windows 上都会生效。Linux 会截到 15 个字符。共享 handler 把自己命名为 `conan-task-0` 到 `conan-task-2`。池的 worker 用同样的方式使用 `thread_name_prefix`，形如 `{prefix}-{index}`。
+`thread_name` is applied on Linux, macOS and Windows. Linux truncates it to 15
+characters. The shared handlers name themselves `conan-task-0` through
+`conan-task-2`. Pool workers use `thread_name_prefix` the same way, as
+`{prefix}-{index}`.
 
-`thread_name` 在 worker 启动时应用。`on_exception` 和 `max_pending` 在 handler 的整个生命周期内有效。事后改它们等于再构造一个 handler。
+`thread_name` is applied when the worker starts. `on_exception` and
+`max_pending` apply for the life of the handler. Changing any of them afterwards
+means constructing another handler.
 
-## 版本
+## Version
 
 ```cpp
 #if TASKHANDLER_VERSION < 300          // major * 10000 + minor * 100 + patch
@@ -330,11 +403,15 @@ std::cout << TASKHANDLER_VERSION_STRING << '\n';   // the header's version
 std::cout << conan::runtime_version() << '\n';     // the library's own
 ```
 
-两者不一致，只会发生在头文件和旁边的编译库已经漂移的时候，这正是 `runtime_version()` 的用途。主版本仍为 0 时，次版本 bump 可能破坏 API 或 ABI；[changelog](CHANGELOG.md) 会写明。
+The two differ only if a header has drifted away from the compiled library next
+to it, which is what `runtime_version()` is for. While the major version is 0, a
+minor bump may break API or ABI; the [changelog](CHANGELOG.md) says what.
 
-## 构建
+## Building
 
-依赖由 [vcpkg](https://github.com/microsoft/vcpkg) 管理；把 `VCPKG_ROOT` 指到你的 checkout。GoogleTest 只在 `tests` feature 里拉取，库的消费方不需要它。
+Dependencies are managed with [vcpkg](https://github.com/microsoft/vcpkg);
+point `VCPKG_ROOT` at your checkout. GoogleTest is only pulled in for the
+`tests` feature, so consumers of the library do not need it.
 
 ```sh
 cmake --preset debug
@@ -342,53 +419,71 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
-| Preset | 构建 |
+| Preset | Build |
 | --- | --- |
-| `debug` | Debug，共享库 |
-| `release` | Release，共享库 |
-| `static` | Release，静态库 |
-| `asan` | AddressSanitizer 与 UndefinedBehaviorSanitizer |
+| `debug` | Debug, shared |
+| `release` | Release, shared |
+| `static` | Release, static |
+| `asan` | AddressSanitizer and UndefinedBehaviorSanitizer |
 | `tsan` | ThreadSanitizer |
 
-测试套件会编两遍，分别对着两种消费方式，这样 header-only 和编译库不会悄悄分叉。
+The suite is compiled twice, once against each consumption mode, so the
+header-only and compiled builds cannot quietly diverge.
 
-| 选项 | 默认 | 作用 |
+| Option | Default | Effect |
 | --- | --- | --- |
-| `TASKHANDLER_BUILD_TESTS` | 作为顶层工程时打开 | 编测试套件 |
-| `TASKHANDLER_BUILD_EXAMPLES` | 作为顶层工程时打开 | 编 `examples/` |
-| `TASKHANDLER_BUILD_BENCHMARKS` | 作为顶层工程时打开 | 编 `benchmarks/` |
-| `TASKHANDLER_INSTALL` | 作为顶层工程时打开 | 生成安装规则 |
+| `TASKHANDLER_BUILD_TESTS` | on when top level | Build the test suite |
+| `TASKHANDLER_BUILD_EXAMPLES` | on when top level | Build `examples/` |
+| `TASKHANDLER_BUILD_BENCHMARKS` | on when top level | Build `benchmarks/` |
+| `TASKHANDLER_INSTALL` | on when top level | Generate install rules |
 | `TASKHANDLER_WARNINGS_AS_ERRORS` | `OFF` | `-Werror` / `/WX` |
-| `BUILD_SHARED_LIBS` | `OFF` | 共享库而不是静态库 |
+| `BUILD_SHARED_LIBS` | `OFF` | Shared instead of static |
 
-`examples/basic.cc` 是 handler 公开 API 的可运行导览。`examples/thread_pool.cc` 覆盖线程池，包括把结果弹回 handler。`benchmarks/task_handler_benchmark.cc` 测提交、调度和往返；改队列前和改完后在同一台机器上跑。
+`examples/basic.cc` is a runnable tour of the handler. `examples/thread_pool.cc`
+covers the pool, including bouncing a result onto a handler.
+`benchmarks/task_handler_benchmark.cc` times submission, scheduling and the
+round trips; run it before and after a change to the queue.
 
-库需要 C++23（GCC 13、Clang 17、MSVC 17.7 或 AppleClang）以及 CMake 3.28。CI 还会用 C++26 再编一遍，覆盖更新的消费方。Apple 的 libc++ 仍没有 `std::move_only_function`；那些构建用一小段 polyfill 存放入队的可调用对象。
+The library needs C++23 (GCC 13, Clang 17, MSVC 17.7, or AppleClang) and
+CMake 3.28. CI also rebuilds everything as C++26, so a newer consumer is
+covered too. Apple's libc++ still lacks `std::move_only_function`; those
+builds use a small polyfill for the queued callable.
 
-## 保证与限制
+## Guarantees and limits
 
-可以依赖的：
+What you can rely on:
 
-- 每个 handler 一条 worker，同一 handler 上的任务绝不会并发跑。
-- `ThreadPool` 上的任务可以并发；共享状态要保护。单个 worker 仍按提交顺序跑已入队的任务。
-- handler 上优先级高的先跑；同优先级按提交顺序。
-- `stop()` 和析构会跑已经接受的工作。
-- 延时任务绝不会在截止时刻之前跑。
-- `instance()` 返回的引用在程序生命周期内一直有效。
+- One worker per handler, so tasks on the same handler never run concurrently.
+- Tasks on a `ThreadPool` may run concurrently; protect shared state. A
+  single worker still runs its queued tasks in submission order.
+- Higher priority first on a handler; equal priority in submission order.
+- `stop()` and destruction run the work already accepted.
+- A delayed task never runs before its deadline.
+- A reference from `instance()` stays valid for the life of the program.
 
-需要小心的：
+What to watch out for:
 
-- 除非设置 `max_pending`，队列无界。生产者跑得比 handler 快就会无限增长。
-- 两个 handler 互相 `Blocked` 会死锁，和两把互斥锁反序拿是一回事。
-- handler 必须活得比它的 worker 久，所以不能从自己的任务里销毁自己。从那里 `stop()` 没问题，但析构无法等待它正在上面跑的那条线程，worker 会继续使用已经销毁的对象。
-- 优先级不抢占。一个长时间任务会拖住后面所有工作。
-- 同一个二进制里混用 `TaskHandler::header_only` 和 `TaskHandler::task_handler` 会得到两套共享 handler。选一个。
-- 如果每个 `ThreadPool` worker 都阻塞在等待更多池内工作上，池会死锁。就地执行救不了这种情况。
+- The queue is unbounded unless you set `max_pending`. A producer that outruns
+  its handler will otherwise grow it without limit.
+- `Blocked` across two handlers that each block on the other deadlocks, exactly
+  as two mutexes taken in opposite orders would.
+- A handler must outlive its worker, so it cannot be destroyed from inside one
+  of its own tasks. `stop()` from there is fine, but destruction cannot wait for
+  a thread it is running on, and the worker would go on using a destroyed
+  object.
+- Priority does not preempt. One long task delays everything behind it.
+- Mixing `TaskHandler::header_only` and `TaskHandler::task_handler` in one
+  binary gives you two sets of shared handlers. Pick one.
+- If every `ThreadPool` worker is blocked waiting for more pool work, the
+  pool deadlocks. Inline-on-worker does not fix that.
 
-## 参与贡献
+## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) 写了构建方式、CI 跑哪些检查，以及一次改动该带上什么。[docs/design.md](docs/design.md) 解释内部为什么长这样，包括试过又丢掉的方案。
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the build, the checks CI runs and what
+a change is expected to come with. [docs/design.md](docs/design.md) explains why
+the internals look the way they do, including the parts that were tried and
+rejected.
 
-## 许可证
+## License
 
-本仓库代码采用 MIT License。
+The code in this repository is licensed under the MIT License.

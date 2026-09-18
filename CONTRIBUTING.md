@@ -69,9 +69,9 @@ output drifts between releases; a different version may disagree with CI.
   [CHANGELOG.md](CHANGELOG.md), in the `Added`, `Changed`, `Fixed` or
   `Breaking` group. Write it for someone upgrading: what changed for them, and
   what they have to do about it.
-- **Documentation**, when the change is visible from outside. `README.md`
-  (Chinese) is the default reference; keep [README.en.md](README.en.md) in
-  sync. [docs/design.md](docs/design.md) is for why the internals look the
+- **Documentation**, when the change is visible from outside. The README is the
+  reference; keep [README.zh.md](README.zh.md) in sync.
+  [docs/design.md](docs/design.md) is for why the internals look the
   way they do, including alternatives that were tried and rejected.
 - **A benchmark run**, when the change touches the queue. `benchmarks/` exists
   so that "did that cost anything" has an answer.

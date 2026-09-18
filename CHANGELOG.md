@@ -16,6 +16,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   consumers rebuild; `TaskHandler` itself is unchanged.
 - Worker thread names on Windows (`SetThreadDescription`). Linux and macOS
   already named threads; both types now share one helper.
+- Chinese translation of the public contract in [README.zh.md](README.zh.md).
+  English remains the default `README.md`.
 
 ### Breaking
 
@@ -61,7 +63,6 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `ThreadPoolOptions::on_exception` may run on several workers at once. The
   hook must be safe for that, or the caller must synchronize it; the library
   does not serialize it.
-- The default `README.md` is Chinese. English is [README.en.md](README.en.md).
 
 ### Fixed
 
