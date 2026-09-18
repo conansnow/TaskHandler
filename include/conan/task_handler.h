@@ -126,8 +126,18 @@ using TaskResultT = std::invoke_result_t<std::decay_t<C> &>;
 // a captured std::unique_ptr) can be queued directly.
 using Task = std::move_only_function<void()>;
 
-template <typename C> Task make_task(C &&callable) {
-  return Task{std::forward<C>(callable)};
+// Immediate and delayed Future paths both need a packaged_task that owns the
+// callable. The two overloads then diverge on whether that work may run
+// inline.
+template <TaskCallable C> struct PackagedWork {
+  std::packaged_task<TaskResultT<C>()> packaged;
+  std::future<TaskResultT<C>> future;
+};
+
+template <TaskCallable C> PackagedWork<C> package_work(C &&callable) {
+  std::packaged_task<TaskResultT<C>()> packaged{std::forward<C>(callable)};
+  std::future<TaskResultT<C>> future = packaged.get_future();
+  return {.packaged = std::move(packaged), .future = std::move(future)};
 }
 
 // Ordering of runnable tasks: higher priority first, and within one priority
@@ -392,7 +402,7 @@ private:
 
 template <detail::QueuedPolicy T, detail::TaskCallable C>
 TaskId TaskHandler::add_callable(C &&callable, int priority) {
-  return submit(detail::make_task(std::forward<C>(callable)), priority);
+  return submit(detail::Task{std::forward<C>(callable)}, priority);
 }
 
 template <detail::BlockedPolicy T, detail::TaskCallable C>
@@ -414,14 +424,14 @@ void TaskHandler::add_callable(C &&callable, int priority) {
   // fulfils the promise. Destroying that wrapper without running it would
   // leave get() blocked forever: the promise lives on this stack until get()
   // returns, so it would not store broken_promise.
-  submit(detail::make_task([&callable, &promise] {
+  submit(detail::Task{[&callable, &promise] {
            try {
              std::invoke(callable);
              promise.set_value();
            } catch (...) {
              promise.set_exception(std::current_exception());
            }
-         }),
+         }},
          priority);
 
   // get() rather than wait(), so that a task which threw reports the failure
@@ -434,19 +444,18 @@ std::future<detail::TaskResultT<C>> TaskHandler::add_callable(C &&callable,
                                                               int priority) {
   // The task outlives this call, so it has to own the callable rather than
   // reference a caller temporary that is about to go out of scope.
-  std::packaged_task<detail::TaskResultT<C>()> packaged{
-      std::forward<C>(callable)};
-  std::future<detail::TaskResultT<C>> future = packaged.get_future();
+  auto work = detail::package_work(std::forward<C>(callable));
 
   if (is_current_thread()) {
-    packaged();
-    return future;
+    work.packaged();
+    return std::move(work.future);
   }
 
-  submit(detail::make_task(
-             [packaged = std::move(packaged)]() mutable { packaged(); }),
+  submit(detail::Task{[packaged = std::move(work.packaged)]() mutable {
+           packaged();
+         }},
          priority);
-  return future;
+  return std::move(work.future);
 }
 
 template <detail::QueuedPolicy T, detail::ChronoDuration D,
@@ -468,8 +477,7 @@ template <detail::QueuedPolicy T, detail::TaskCallable C>
 TaskId
 TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
                              C &&callable, int priority) {
-  return submit_at(detail::make_task(std::forward<C>(callable)), priority,
-                   deadline);
+  return submit_at(detail::Task{std::forward<C>(callable)}, priority, deadline);
 }
 
 template <detail::FuturePolicy T, detail::TaskCallable C>
@@ -480,13 +488,12 @@ TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
   // it inline would either ignore the deadline or park the worker until it,
   // and getting the future from this thread would wait for a task that cannot
   // start until the current one returns.
-  std::packaged_task<detail::TaskResultT<C>()> packaged{
-      std::forward<C>(callable)};
-  std::future<detail::TaskResultT<C>> future = packaged.get_future();
-  submit_at(detail::make_task(
-                [packaged = std::move(packaged)]() mutable { packaged(); }),
+  auto work = detail::package_work(std::forward<C>(callable));
+  submit_at(detail::Task{[packaged = std::move(work.packaged)]() mutable {
+             packaged();
+           }},
             priority, deadline);
-  return future;
+  return std::move(work.future);
 }
 
 } // namespace conan
