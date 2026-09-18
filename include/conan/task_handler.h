@@ -279,7 +279,7 @@ private:
 
 struct TaskHandlerOptions {
   // Name given to the worker thread, for debuggers and profilers. Linux
-  // truncates thread names to 15 characters; other platforms may ignore it.
+  // truncates thread names to 15 characters.
   std::string thread_name{};
 
   // Invoked on the worker thread when a Queued task throws. Queued tasks have

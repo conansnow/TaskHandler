@@ -1,12 +1,17 @@
 # TaskHandler
 
-A small single-worker task queue for C++23.
+A small single-worker task queue for C++23, plus a sibling thread pool for
+work that is allowed to run concurrently.
 
 Every handler owns exactly one thread, and everything submitted to that handler
 runs on it, one task at a time. That is what makes it useful as an event
 handler: state owned by a handler needs no locking, because only its worker
 ever touches it. Submit work and forget about it, submit work and wait for it,
 or submit work and take a future for the result.
+
+CPU work that can overlap belongs on `ThreadPool`, not on a second worker
+inside the handler. Bounce results back onto a handler when they must touch
+handler-owned state.
 
 Usable header-only or as a compiled library, from the same source.
 
@@ -35,6 +40,7 @@ std::cout << answer.get() << '\n';
 - [Errors](#errors)
 - [Backpressure](#backpressure)
 - [Shared handlers](#shared-handlers)
+- [Thread pool](#thread-pool)
 - [Lifetime](#lifetime)
 - [Options](#options)
 - [Version](#version)
@@ -214,6 +220,9 @@ only wants to know that the handler would not take the work can catch one type.
 | `conan::TaskHandlerError` | Base of both; also a `std::runtime_error` |
 | `conan::TaskHandlerStopped` | The handler has been stopped |
 | `conan::TaskHandlerQueueFull` | `max_pending` tasks are already waiting |
+| `conan::ThreadPoolError` | Base of the pool's refusal exceptions |
+| `conan::ThreadPoolStopped` | The pool has been stopped |
+| `conan::ThreadPoolQueueFull` | the pool already holds `max_pending` tasks |
 
 ## Backpressure
 
@@ -267,6 +276,48 @@ conan::TaskHandler render_thread;
 conan::TaskHandler io_thread;
 ```
 
+## Thread pool
+
+`ThreadPool` is the type for work that is allowed to run concurrently.
+`TaskHandler` stays one worker: that is the whole point of it. Include
+`conan/thread_pool.h` and construct a pool you own. There is no process-wide
+pool.
+
+```cpp
+#include "conan/thread_pool.h"
+
+conan::ThreadPoolOptions options;
+options.thread_count = 4;                 // 0 means max(1, hardware_concurrency())
+options.thread_name_prefix = "crunch";    // workers are crunch-0, crunch-1, ...
+conan::ThreadPool pool{std::move(options)};
+
+pool.add_callable([] { crunch(); });
+pool.add_callable<conan::Blocked>([&] { value = crunch(); });
+std::future<int> answer = pool.add_callable<conan::Future>([] { return crunch(); });
+```
+
+The policy tags are the same ones the handler uses. `Queued` returns `void`:
+a pool does not cancel queued work, so there is no `TaskId`. Delayed work
+stays on a handler; one thread should sleep on deadlines.
+
+Bounce a result onto a handler when it must touch handler-owned state:
+
+```cpp
+conan::TaskHandler handler;
+conan::ThreadPool pool;
+
+pool.add_callable([&handler] {
+  const int result = crunch();
+  handler.add_callable([result] { apply(result); });
+});
+```
+
+`stop()` drains accepted work. `max_pending` refuses with
+`ThreadPoolQueueFull` rather than blocking. Recursive `Blocked` and `Future`
+from a worker run inline, which keeps a 1-thread pool from deadlocking on
+itself. If every worker is blocked waiting for more pool work, the pool still
+deadlocks: that is the same hazard as any fixed-size pool.
+
 ## Lifetime
 
 Constructing a handler starts its worker. Destroying it runs everything already
@@ -309,9 +360,10 @@ struct TaskHandlerOptions {
 };
 ```
 
-`thread_name` is applied on Linux and macOS and ignored elsewhere. Linux
-truncates it to 15 characters. The shared handlers name themselves
-`conan-task-0` through `conan-task-2`.
+`thread_name` is applied on Linux, macOS and Windows. Linux truncates it to 15
+characters. The shared handlers name themselves `conan-task-0` through
+`conan-task-2`. Pool workers use `thread_name_prefix` the same way, as
+`{prefix}-{index}`.
 
 `thread_name` is applied when the worker starts. `on_exception` and
 `max_pending` apply for the life of the handler. Changing any of them afterwards
@@ -364,7 +416,8 @@ header-only and compiled builds cannot quietly diverge.
 | `TASKHANDLER_WARNINGS_AS_ERRORS` | `OFF` | `-Werror` / `/WX` |
 | `BUILD_SHARED_LIBS` | `OFF` | Shared instead of static |
 
-`examples/basic.cc` is a runnable tour of everything above.
+`examples/basic.cc` is a runnable tour of the handler. `examples/thread_pool.cc`
+covers the pool, including bouncing a result onto a handler.
 `benchmarks/task_handler_benchmark.cc` times submission, scheduling and the
 round trips; run it before and after a change to the queue.
 
@@ -378,7 +431,8 @@ builds use a small polyfill for the queued callable.
 What you can rely on:
 
 - One worker per handler, so tasks on the same handler never run concurrently.
-- Higher priority first; equal priority in submission order.
+- Tasks on a `ThreadPool` may run concurrently; protect shared state.
+- Higher priority first on a handler; equal priority in submission order.
 - `stop()` and destruction run the work already accepted.
 - A delayed task never runs before its deadline.
 - A reference from `instance()` stays valid for the life of the program.
@@ -396,6 +450,8 @@ What to watch out for:
 - Priority does not preempt. One long task delays everything behind it.
 - Mixing `TaskHandler::header_only` and `TaskHandler::task_handler` in one
   binary gives you two sets of shared handlers. Pick one.
+- If every `ThreadPool` worker is blocked waiting for more pool work, the
+  pool deadlocks. Inline-on-worker does not fix that.
 
 ## Contributing
 

@@ -32,7 +32,8 @@ ctest --preset asan
 TSAN_OPTIONS=halt_on_error=1 ctest --preset tsan --repeat until-fail:20
 clang-format-23 --dry-run --Werror $(git ls-files '*.h' '*.cc')
 clang-tidy-23 -p out/build/debug --warnings-as-errors='*' \
-    src/task_handler.cc examples/basic.cc benchmarks/task_handler_benchmark.cc
+    src/task_handler.cc src/thread_pool.cc examples/basic.cc \
+    examples/thread_pool.cc benchmarks/task_handler_benchmark.cc
 ```
 
 `--warnings-as-errors` is not decoration: clang-tidy exits 0 on findings, so
@@ -60,10 +61,10 @@ output drifts between releases; a different version may disagree with CI.
 ## What a change comes with
 
 - **A test.** Every bug this library has had is a named regression test in
-  `tests/task_handler_test.cc`, because each of them looked impossible until it
-  happened. Prefer the `Gate` helper over a sleep: it parks the worker inside a
-  task, so a test about ordering or about what is still queued becomes
-  deterministic instead of timing-dependent.
+  `tests/task_handler_test.cc` or `tests/thread_pool_test.cc`, because each of
+  them looked impossible until it happened. Prefer the `Gate` helper over a
+  sleep: it parks a worker inside a task, so a test about ordering or about
+  what is still queued becomes deterministic instead of timing-dependent.
 - **A changelog entry** under `## [Unreleased]` in
   [CHANGELOG.md](CHANGELOG.md), in the `Added`, `Changed`, `Fixed` or
   `Breaking` group. Write it for someone upgrading: what changed for them, and
@@ -83,15 +84,15 @@ between them they cover layout and naming. Beyond that:
   comment earns its place by recording a constraint, a trade-off or a bug that
   the next reader would otherwise have to rediscover.
 - Public declarations are documented where they are declared, in
-  `include/conan/task_handler.h`. Definitions in
-  `include/conan/detail/task_handler-inl.h` document their implementation, not
-  their contract.
+  `include/conan/task_handler.h` and `include/conan/thread_pool.h`.
+  Definitions in the `detail/*-inl.h` files document their
+  implementation, not their contract.
 - User code -- a task body, a task destructor, the exception hook -- must never
   run with `mutex_` held. It can call back into the handler, and one that does
   must not deadlock.
-- New members on `TaskHandler` or `TaskHandlerOptions` break the shared-library
-  ABI. That is allowed while the major version is 0, but say so in the
-  changelog.
+- New members on `TaskHandler` or `TaskHandlerOptions` (or on
+  `ThreadPool` / `ThreadPoolOptions`) break the shared-library ABI.
+  That is allowed while the major version is 0, but say so in the changelog.
 
 ## Versions
 

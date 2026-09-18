@@ -1,8 +1,10 @@
 #include "conan/task_handler.h"
+#include "conan/thread_pool.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 int main() {
   conan::TaskHandler handler;
@@ -13,9 +15,16 @@ int main() {
   int blocked = 0;
   handler.add_callable<conan::Blocked>([&blocked] { blocked = 7; });
 
-  if (answer != 42 || blocked != 7) {
-    std::fprintf(stderr, "unexpected results: answer=%d blocked=%d\n", answer,
-                 blocked);
+  conan::ThreadPoolOptions pool_options;
+  pool_options.thread_count = 1;
+  conan::ThreadPool pool{std::move(pool_options)};
+  int pooled = 0;
+  pool.add_callable<conan::Blocked>([&pooled] { pooled = 9; });
+
+  if (answer != 42 || blocked != 7 || pooled != 9) {
+    std::fprintf(stderr,
+                 "unexpected results: answer=%d blocked=%d pooled=%d\n",
+                 answer, blocked, pooled);
     return EXIT_FAILURE;
   }
 

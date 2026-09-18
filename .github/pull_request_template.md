@@ -21,5 +21,6 @@ was in and what it did wrong.
 - [ ] Regression test added for anything that was broken
 - [ ] `CHANGELOG.md` updated under `## [Unreleased]`
 - [ ] Documentation updated, if the change is visible from outside
-- [ ] Breaks API or ABI (new members on `TaskHandler` or
-      `TaskHandlerOptions` do), and the changelog says so
+- [ ] Breaks API or ABI (new members on `TaskHandler`,
+      `TaskHandlerOptions`, `ThreadPool` or `ThreadPoolOptions` do),
+      and the changelog says so

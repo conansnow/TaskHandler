@@ -12,6 +12,7 @@ does; this is for anyone changing how it does it.
 - [Shutdown](#shutdown)
 - [Backpressure](#backpressure)
 - [Shared handlers](#shared-handlers)
+- [ThreadPool](#threadpool)
 - [Two consumption modes](#two-consumption-modes)
 - [Versioning and ABI](#versioning-and-abi)
 - [Testing](#testing)
@@ -26,8 +27,9 @@ for an event handler, because state owned by a handler needs no locking when
 only its worker touches it.
 
 It is deliberately not a thread pool, not a work-stealing scheduler, and not a
-coroutine runtime. A pool would break the property the library exists for. Those
-belong in a different type, and a program that needs both can have both.
+coroutine runtime. A pool would break the property the library exists for.
+Concurrent work belongs on `ThreadPool`, a sibling type in this library, and a
+program that needs both can have both.
 
 The library also has no dependencies beyond the standard library and a thread
 library. That is a feature for the sort of project that vendors a header, and it
@@ -226,6 +228,40 @@ Three is arbitrary but fixed, because `instance<Index>()` checks the index at
 compile time. A program that wants a different number owns its handlers, which
 is what constructing one is for.
 
+## ThreadPool
+
+`ThreadPool` is the other type the [Scope](#scope) section points at. It is not
+a mode of `TaskHandler`. N workers share one FIFO queue, so tasks on a pool
+*may* run at the same time, and shared state needs locking. The reason it lives
+in this library is so a program can bounce CPU work off a handler and back
+without pulling in a second dependency.
+
+What it copies from the handler, because the same constraints apply:
+
+- User code never runs with `mutex_` held.
+- `stop()` and destruction drain accepted work, so a `Blocked` caller is not
+  left waiting on a promise nobody fulfils.
+- `Blocked` borrows the callable; `Queued` and `Future` own it.
+- Recursive `Blocked`/`Future` from a worker run inline.
+- `max_pending` throws rather than blocking submit.
+- Lock order is `lifecycle_mutex_` then `mutex_`.
+
+What it does not copy, on purpose:
+
+- **Timers.** One thread should sleep on deadlines. That is the handler.
+- **Priority and `cancel(TaskId)`.** Those need the serial map. A pool is for
+  concurrent throughput; `Queued` returns `void`.
+- **`instance()`.** A process-wide pool is hidden global contention.
+- **Work stealing.** A mutex and a deque are enough for a small pool, and a
+  steal loop is a different product.
+
+The remaining pool hazard is the usual one: if every worker is `Blocked` on
+more pool work, nothing runs. Inline-on-worker only helps the recursive and
+1-thread cases.
+
+Worker threads are named through the same helper as the handler, including
+Windows `SetThreadDescription`.
+
 ## Two consumption modes
 
 The same source is either a header-only library or a compiled one:
@@ -320,3 +356,9 @@ Run it before and after a change to the queue.
   path that already takes the lock to insert.
 - **A pimpl'd `TaskHandler`.** See [Two consumption
   modes](#two-consumption-modes).
+- **Putting a pool inside `TaskHandler`.** The serial guarantee is the
+  product. Concurrent work is `ThreadPool`.
+- **Work stealing, a growing pool, or timers on `ThreadPool`.** Stealing and
+  growth are a different scheduler; delayed work belongs on a handler.
+- **A process-wide `ThreadPool::instance()`.** Hidden global contention. A
+  program that wants a shared pool constructs one and holds it.

@@ -80,6 +80,9 @@ endfunction()
 set(TASKHANDLER_HEADERS
     include/conan/task_handler.h
     include/conan/detail/task_handler-inl.h
+    include/conan/detail/thread_name.h
+    include/conan/thread_pool.h
+    include/conan/detail/thread_pool-inl.h
     )
 
 # ---------------------------------------------------------------------------
@@ -101,7 +104,7 @@ target_link_libraries(task_handler_header_only INTERFACE Threads::Threads)
 # ---------------------------------------------------------------------------
 # Compiled usage: TaskHandler::task_handler
 # ---------------------------------------------------------------------------
-add_library(task_handler src/task_handler.cc ${TASKHANDLER_HEADERS})
+add_library(task_handler src/task_handler.cc src/thread_pool.cc ${TASKHANDLER_HEADERS})
 add_library(TaskHandler::task_handler ALIAS task_handler)
 taskhandler_set_warnings(task_handler)
 

@@ -35,9 +35,9 @@ Checks: >
   -readability-redundant-lambda-parameter-list,
   -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access
 
-# misc-definitions-in-headers fires on every definition in task_handler-inl.h,
-# which is the point of that file: it is inline in header-only builds and
-# compiled exactly once otherwise.
+# misc-definitions-in-headers fires on every definition in the *-inl.h
+# files, which is the point of those files: they are inline in header-only
+# builds and compiled exactly once otherwise.
 #
 # misc-include-cleaner fires on src/task_handler.cc, whose only job is to
 # include the two headers it is told it does not use.

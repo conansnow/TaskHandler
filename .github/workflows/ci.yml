@@ -285,5 +285,5 @@ jobs:
         run: |
           clang-tidy-23 --version
           clang-tidy-23 -p out/build/debug --warnings-as-errors='*' \
-            src/task_handler.cc examples/basic.cc \
-            benchmarks/task_handler_benchmark.cc
+            src/task_handler.cc src/thread_pool.cc examples/basic.cc \
+            examples/thread_pool.cc benchmarks/task_handler_benchmark.cc

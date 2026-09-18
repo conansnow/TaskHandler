@@ -8,6 +8,7 @@
 // which is a question a single-worker queue otherwise invites guessing about.
 
 #include "conan/task_handler.h"
+#include "conan/thread_pool.h"
 
 #include <atomic>
 #include <chrono>
@@ -128,6 +129,31 @@ Case schedule_and_cancel(std::size_t operations) {
   });
 }
 
+Case queued_pool_throughput(std::size_t operations) {
+  return measure("pool queued submit, 4 workers", operations, [operations] {
+    conan::ThreadPoolOptions options;
+    options.thread_count = 4;
+    conan::ThreadPool pool{std::move(options)};
+    for (std::size_t i = 0; i < operations; i++)
+      pool.add_callable([] {});
+    pool.flush();
+  });
+}
+
+Case pool_future_round_trip(std::size_t operations) {
+  return measure("pool future round trip", operations, [operations] {
+    conan::ThreadPoolOptions options;
+    options.thread_count = 4;
+    conan::ThreadPool pool{std::move(options)};
+    std::size_t sink = 0;
+    for (std::size_t i = 0; i < operations; i++)
+      sink += std::size_t(
+          pool.add_callable<conan::Future>([] { return 1; }).get());
+    if (sink != operations)
+      std::fputs("benchmark lost a pool task\n", stderr);
+  });
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -157,6 +183,8 @@ int main(int argc, char **argv) {
       schedule_and_cancel(200000 * scale),
       blocked_round_trip(20000 * scale),
       future_round_trip(20000 * scale),
+      queued_pool_throughput(200000 * scale),
+      pool_future_round_trip(20000 * scale),
   };
   report(results);
   return EXIT_SUCCESS;

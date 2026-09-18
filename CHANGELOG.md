@@ -6,6 +6,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `conan::ThreadPool`, a sibling of `TaskHandler` for work that is allowed to
+  run concurrently. Same `Queued` / `Blocked` / `Future` tags, drain-on-stop,
+  `max_pending` backpressure and exception hook. `Queued` returns `void`: there
+  is no `TaskId` and no cancel, and there are no timers, priorities or shared
+  instances. Include `conan/thread_pool.h`. A new type, so compiled-library
+  consumers rebuild; `TaskHandler` itself is unchanged.
+- Worker thread names on Windows (`SetThreadDescription`). Linux and macOS
+  already named threads; both types now share one helper.
+
 ### Breaking
 
 - The library now requires C++23 and CMake 3.28. Rebuild consumers with a

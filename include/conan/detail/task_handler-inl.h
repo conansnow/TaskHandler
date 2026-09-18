@@ -10,13 +10,11 @@
 #include "conan/task_handler.h"
 #endif
 
+#include "conan/detail/thread_name.h"
+
 #include <array>
 #include <cstdlib>
 #include <format>
-
-#if defined(__linux__) || defined(__APPLE__)
-#include <pthread.h>
-#endif
 
 namespace conan {
 
@@ -324,16 +322,7 @@ TaskHandler::report_exception(std::exception_ptr error) const noexcept {
 }
 
 TASKHANDLER_INLINE void TaskHandler::apply_thread_name() const noexcept {
-  if (options_.thread_name.empty())
-    return;
-
-#if defined(__linux__)
-  // Linux caps thread names at 16 bytes including the terminator.
-  const std::string name = options_.thread_name.substr(0, 15);
-  pthread_setname_np(pthread_self(), name.c_str());
-#elif defined(__APPLE__)
-  pthread_setname_np(options_.thread_name.c_str());
-#endif
+  detail::set_current_thread_name(options_.thread_name);
 }
 
 namespace detail {
