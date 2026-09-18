@@ -202,6 +202,9 @@ public:
 private:
   friend class TaskHandler;
 
+  // How the task was submitted, not where it currently lives. Promotion from
+  // timed_ to ready_ keeps the caller's TaskId unchanged, so Kind::timed can
+  // still name a task that is already in ready_.
   enum class Kind : unsigned char { none, ready, timed };
 
   Kind kind_{Kind::none};

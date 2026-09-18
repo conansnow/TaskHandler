@@ -246,6 +246,9 @@ TASKHANDLER_INLINE bool TaskHandler::cancel(const TaskId &id) {
   bool cancelled_timer = false;
   {
     std::lock_guard<std::mutex> lock{mutex_};
+    // Kind::timed means the task was submitted delayed. Promotion does not
+    // rewrite the caller's TaskId, so a due timer may already be in ready_.
+    // Looking only at timed_ would make post-promotion cancel a no-op.
     if (id.kind_ == TaskId::Kind::timed) {
       if (auto node = timed_.extract(detail::TimerKey{
               .deadline = id.deadline_, .sequence = id.sequence_})) {

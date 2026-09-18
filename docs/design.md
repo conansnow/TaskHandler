@@ -74,7 +74,9 @@ The invariants a change has to preserve:
 - A `sequence_` value is never reused, which is what makes a `TaskId` safe to
   cancel with: it can never name a later task.
 - Promotion from `timed_` to `ready_` keeps the original sequence number, so a
-  delayed task stays cancellable across the move.
+  delayed task stays cancellable across the move. The caller's `TaskId` still
+  says `Kind::timed`; `cancel()` therefore looks in `timed_` first and then in
+  `ready_`.
 - Nothing accepted into `ready_` is dropped. `stop()` drains it, because a
   `Blocked` caller is waiting on a promise that only the task can fulfil.
 - User code -- a task body, a task destructor, the exception hook -- never runs
