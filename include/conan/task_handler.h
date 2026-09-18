@@ -73,12 +73,14 @@
 #include <functional>
 #include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <version>
 
 namespace conan {
 
@@ -124,7 +126,56 @@ using TaskResultT = std::invoke_result_t<std::decay_t<C> &>;
 // Type-erased nullary task. Unlike std::function this never requires the
 // callable to be copy-constructible, so move-only state (a std::packaged_task,
 // a captured std::unique_ptr) can be queued directly.
+//
+// Apple's libc++ still does not ship P0288R9 (Xcode 26.6 on macos-latest has
+// no std::move_only_function). The queue only needs a move-only void()
+// wrapper, so keep the same call sites -- including assignment from nullptr
+// to destroy the callable -- behind a small polyfill until it does.
+#if defined(__cpp_lib_move_only_function) &&                                   \
+    __cpp_lib_move_only_function >= 202110L
 using Task = std::move_only_function<void()>;
+#else
+class Task {
+  struct Impl {
+    Impl() = default;
+    virtual ~Impl() = default;
+    Impl(const Impl &) = delete;
+    Impl &operator=(const Impl &) = delete;
+    Impl(Impl &&) = delete;
+    Impl &operator=(Impl &&) = delete;
+    virtual void invoke() = 0;
+  };
+
+  template <typename F> struct Model final : Impl {
+    explicit Model(F fn) : fn_(std::move(fn)) {}
+    void invoke() override { std::invoke(fn_); }
+    F fn_;
+  };
+
+  std::unique_ptr<Impl> impl_{};
+
+public:
+  Task() = default;
+  Task(std::nullptr_t) noexcept = default;
+  Task(const Task &) = delete;
+  Task &operator=(const Task &) = delete;
+  Task(Task &&) noexcept = default;
+  Task &operator=(Task &&) noexcept = default;
+
+  template <typename F>
+    requires(!std::same_as<std::decay_t<F>, Task>)
+  Task(F &&callable)
+      : impl_(std::make_unique<Model<std::decay_t<F>>>(
+            std::forward<F>(callable))) {}
+
+  Task &operator=(std::nullptr_t) noexcept {
+    impl_.reset();
+    return *this;
+  }
+
+  void operator()() { impl_->invoke(); }
+};
+#endif
 
 // Immediate and delayed Future paths both need a packaged_task that owns the
 // callable. The two overloads then diverge on whether that work may run
@@ -492,8 +543,8 @@ TaskHandler::add_callable_at(std::chrono::steady_clock::time_point deadline,
   // start until the current one returns.
   auto work = detail::package_work(std::forward<C>(callable));
   submit_at(detail::Task{[packaged = std::move(work.packaged)]() mutable {
-             packaged();
-           }},
+              packaged();
+            }},
             priority, deadline);
   return std::move(work.future);
 }

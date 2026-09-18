@@ -130,7 +130,10 @@ Tasks are stored as `std::move_only_function<void()>`, rather than
 `std::function`. `std::function` requires its target to be copy-constructible,
 which would reject a lambda that captured a `std::unique_ptr` -- exactly the
 shape a queued task usually has. The exception hook on `TaskHandlerOptions`
-stays `std::function` so the options struct remains copyable.
+stays `std::function` so the options struct remains copyable. Apple's libc++
+still does not ship P0288R9, so those toolchains get a small move-only
+type-erased wrapper with the same call sites (including `= nullptr` to destroy
+the callable after it has run).
 
 `Blocked` and `Future` check `is_current_thread()` and run the task inline when
 they are already on the worker. Queueing there would wait on a task that cannot

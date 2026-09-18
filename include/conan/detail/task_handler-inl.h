@@ -175,13 +175,13 @@ TaskHandler::promote_due_timers(std::chrono::steady_clock::time_point now) {
     try {
       // Keeping the original sequence number means a task stays cancellable
       // across the move. try_emplace default-constructs an empty Task first
-      // so a throwing allocation cannot consume the callable; moving
-      // move_only_function is noexcept.
-      auto it = ready_
-                    .try_emplace(detail::ReadyKey{
-                        .priority = node.mapped().priority,
-                        .sequence = node.key().sequence})
-                    .first;
+      // so a throwing allocation cannot consume the callable; moving the
+      // stored Task is noexcept.
+      auto it =
+          ready_
+              .try_emplace(detail::ReadyKey{.priority = node.mapped().priority,
+                                            .sequence = node.key().sequence})
+              .first;
       it->second = std::move(node.mapped().task);
     } catch (...) {
       timed_.insert(std::move(node));
@@ -409,7 +409,7 @@ TASKHANDLER_INLINE InstanceRegistry &registry() {
   // object's usual lifetime would otherwise touch a dead mutex. Handlers are
   // leaked for the same reason. atexit still joins the workers so process
   // exit matches uninit().
-  static InstanceRegistry *instance = new InstanceRegistry;
+  static auto *instance = new InstanceRegistry;
   static const int atexit_stop = [] {
     std::atexit([] { instance->stop_all(); });
     return 0;

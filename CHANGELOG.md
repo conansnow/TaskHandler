@@ -9,19 +9,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Breaking
 
 - The library now requires C++23 and CMake 3.28. Rebuild consumers with a
-  toolchain that can do both; GCC 13, Clang 17, MSVC 17.7 and AppleClang with a
-  complete C++23 library are the floor CI actually runs. `CMAKE_CXX_STANDARD`
-  still defaults to 23 and is still overridable, so CI rebuilds as C++26 to
-  catch anything a newer consumer would hit. CMake 3.28 is the floor because
-  that is when `CMAKE_CXX_SCAN_FOR_MODULES` exists; 4.0 is not required.
+  toolchain that can do both; GCC 13, Clang 17, MSVC 17.7 and AppleClang are
+  the floor CI actually runs. `CMAKE_CXX_STANDARD` still defaults to 23 and is
+  still overridable, so CI rebuilds as C++26 to catch anything a newer
+  consumer would hit. CMake 3.28 is the floor because that is when
+  `CMAKE_CXX_SCAN_FOR_MODULES` exists; 4.0 is not required.
 - Submission overloads are constrained with concepts (`QueuedPolicy`,
   `BlockedPolicy`, `FuturePolicy`, `TaskCallable`) rather than
   `std::enable_if`. Call sites that already passed a policy tag and an
   invocable do not change. The `detail::is_*_v` traits are gone.
 - Queued work is stored as `std::move_only_function<void()>` instead of
-  `std::unique_ptr<detail::Task>`. That is an ABI break for the compiled
-  library; rebuild against the matching header. `TaskHandlerOptions::on_exception`
-  is still `std::function`, so options stay copyable.
+  `std::unique_ptr<detail::Task>` when the standard library provides it. That
+  is an ABI break for the compiled library; rebuild against the matching
+  header. `TaskHandlerOptions::on_exception` is still `std::function`, so
+  options stay copyable. Apple's libc++ still lacks P0288R9, so those builds
+  keep an equivalent move-only type-erased callable with the same call sites.
 - The version macros remain 0.3.0 until this work is tagged. The tag that
   ships these breaks must be 0.4.0: `SameMinorVersion` would otherwise let a
   0.3 consumer accept an ABI-incompatible install.
@@ -61,6 +63,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Promoting a due timer into `ready_` could drop the callable if the insert
   threw after the move. The mapped task is assigned only after `try_emplace`
   has allocated the node.
+- AppleClang (Xcode 26.6 on `macos-latest`) failed to compile the C++23
+  upgrade: libc++ has no `std::move_only_function`. The queue now polyfills
+  that type so macOS debug, release and consume jobs build.
+- clang-tidy 23 rejected the leaked instance registry for
+  `modernize-use-auto`. The pointer is now `auto *`.
 
 ## [0.3.0]
 
